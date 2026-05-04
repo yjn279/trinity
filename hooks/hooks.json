@@ -1,0 +1,45 @@
+{
+  "description": "Trinity harness hooks — runtime dir setup, /trinity:run preflight, subagent log lines.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p .trinity && touch .trinity/trinity.log"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=$(jq -r '.prompt // empty' 2>/dev/null); case \"$p\" in /trinity:run*) if ! git rev-parse --git-dir >/dev/null 2>&1; then echo 'trinity: not inside a git repository.' >&2; exit 2; fi; if [ -n \"$(git status --porcelain)\" ]; then echo 'trinity: working tree is dirty. Commit or stash before /trinity:run.' >&2; exit 2; fi; printf 'trinity: starting on branch %s\\n' \"$(git rev-parse --abbrev-ref HEAD)\" >&2 ;; esac"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "trinity:generator",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s generator finished on %s\\n' \"$(date -u +%FT%TZ)\" \"$(git rev-parse --short HEAD 2>/dev/null || echo no-git)\" >> .trinity/trinity.log"
+          }
+        ]
+      },
+      {
+        "matcher": "trinity:evaluator",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s evaluator finished\\n' \"$(date -u +%FT%TZ)\" >> .trinity/trinity.log"
+          }
+        ]
+      }
+    ]
+  }
+}
