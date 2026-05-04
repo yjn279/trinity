@@ -1,0 +1,8 @@
+{
+  "name": "trinity",
+  "description": "Planner → Generator → Evaluator pipeline. Runs in an isolated git worktree, judges PASS/FAIL, opens a PR.",
+  "version": "0.1.0",
+  "author": {
+    "name": "winnie279"
+  }
+}
