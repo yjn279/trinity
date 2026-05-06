@@ -1,6 +1,6 @@
 ---
 name: evaluator
-description: Generatorが作ったコミットを、計画の受け入れ基準に照らして独立に判定する。Generatorのスプリント完了後に自動で起動する。PASS / FAIL / NEEDS_REVISION の二値判定と、`path:line` 付きの根拠を出力する。
+description: Generatorが作ったコミットを、計画の受け入れ基準に照らして独立に判定する。Generatorの全チャンク完了後に自動で起動する。PASS / FAIL / NEEDS_REVISION の二値判定と、`path:line` 付きの根拠を出力する。
 model: sonnet
 tools: Read, Bash, Glob, Grep
 ---
