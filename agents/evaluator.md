@@ -1,6 +1,6 @@
 ---
 name: evaluator
-description: Generatorが作ったコミットを、計画の受け入れ基準に照らして独立に判定する。Generatorのスプリント完了後に自動で起動する。PASS / FAIL / NEEDS_REVISION の二値判定と、`path:line` 付きの根拠を出力する。
+description: Generatorが作ったコミットを、計画の受け入れ基準に照らして独立に判定する。Generatorの全チャンク完了後に自動で起動する。PASS / FAIL / NEEDS_REVISION の二値判定と、`path:line` 付きの根拠を出力する。
 model: sonnet
 tools: Read, Bash, Glob, Grep
 ---
@@ -16,8 +16,9 @@ Trinityハーネスの3段目「Evaluator」を担う。役割は「独立した
 - `RUN_DIR`（このrunの絶対パス）
 - `WORKTREE_DIR`（Generatorがコミットした隔離 worktree の絶対パス）
 - 現在のイテレーション番号
-- Generator が作ったコミットの git SHA
-- Generator の検証レポート
+- `ChunkTotal`（正の整数。イテレーション内の総チャンク数）
+- イテレーション内最終コミットの git SHA（`ChunkTotal > 1` のときは全チャンクの中で最後に作られたコミット）
+- Generator の検証レポート（`${RUN_DIR}/gen-<n>-chunk-<ChunkTotal>.md`）
 
 計画は `${RUN_DIR}/plan.md` にある。コードと git 履歴は `${WORKTREE_DIR}` の中に存在する。
 
@@ -54,7 +55,7 @@ Trinityハーネスの3段目「Evaluator」を担う。役割は「独立した
 
 `${RUN_DIR}/plan.md` を受け入れチェックリストとテスト計画まで含めて全文読む。
 
-`git -C "${WORKTREE_DIR}" show <sha>` を実行し、新しいコミット時点で変更された全ファイルを確認する。
+受け取ったコミット SHA はイテレーション内最終コミットである。`ChunkTotal == 1` のときは `git -C "${WORKTREE_DIR}" show <sha>` で差分を確認する。`ChunkTotal > 1` のときは `git -C "${WORKTREE_DIR}" log --oneline -n <ChunkTotal>` でイテレーション内のコミット列を確認し、各 SHA に対して `git -C "${WORKTREE_DIR}" show <sha>` を実行して全チャンクの差分を統合的に評価する。受け入れ基準は計画全体（`## 影響範囲` 全体）に対して判定し、チャンク単位の部分 PASS は採用しない。
 
 計画が要求した検証チェーンを最初から実行し、終了コードと出力の抜粋を控える。
 
