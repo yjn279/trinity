@@ -187,6 +187,77 @@ PR の本文は次の形にする。`.trinity/` は gitignore されておりレ
 
 base は `$BASE_BRANCH`、head は `$BRANCH` とする。
 
+## PASS後の起票候補ヒアリング（post-run-issue-suggestions）
+
+### 起動条件
+
+本段は PASS で `gh pr create`（または GitHub MCP `create_pull_request`）が成功したあと、ユーザーへの最終出力（`Trinity result:` ブロック印字）の直前に実施する。
+
+- `NEEDS_REVISION` / `FAIL` で `max_iter` に達した経路では本段を実施せずスキップする。
+- 候補が 0 件のときは `AskUserQuestion` を呼ばず、最終出力の `Issues:` 行も出さない（または「起票候補なし」旨を1行入れるだけにとどめる）。
+
+本段はオーケストレーター（`commands/run.md`）の責務であり、サブエージェント（Planner / Generator / Evaluator）には委譲しない。サブエージェント定義（`agents/*.md`）は変更しない。
+
+### 候補の抽出
+
+次の3系統を候補の抽出元とする。
+
+1. **最新 `${RUN_DIR}/eval-<n>.md` のリスク・懸念 / 次イテレーション / 持ち越し指摘相当のセクション**
+2. **同 run の Generator 検証レポート（`${RUN_DIR}/gen-<n>-chunk-*.md`）の NOTES** — 計画外の逸脱・妥協ポイント
+3. **PR 本文の「明示的にスコープ外」セクションの項目**
+
+### 候補の整理
+
+各候補を次の2要素に分けて整理する。
+
+- **タイトル候補（短文）**: issue タイトルとして使う1文
+- **本文候補**: 背景・期待動作・関連ファイルパス等を含む説明文
+
+候補数が 16 を超える場合は、Evaluator / Generator レポート上の重要度（記載順を上位とみなす等の単純な方針で構わない）で上位 16 件まで残し、それ以下は破棄するか `${RUN_DIR}/skipped-suggestions.md` にメモする。
+
+### ユーザーへの提示（AskUserQuestion）
+
+`AskUserQuestion` を **1コール** で呼ぶ。`multiSelect=true` を指定する。
+
+`AskUserQuestion` のスキーマ上限（1問あたり最大4オプション、1コールあたり最大4問）に従い、候補数に応じて1〜4問へ分割収容する。
+
+| 候補数 | 問数 |
+| --- | --- |
+| 1〜4 | 1問 |
+| 5〜8 | 2問 |
+| 9〜12 | 3問 |
+| 13〜16 | 4問 |
+
+各オプションのラベル＝候補タイトル、description＝候補本文の要約（短い背景）とする。「Other」は `AskUserQuestion` が自動付与するため、テンプレートには含めない。
+
+### 同意 = 即起票
+
+ユーザーが選択した候補について、**追加の最終確認プロンプトを挟まず**、即 `gh issue create` を1件ずつ連続実行する。
+
+```shell
+gh issue create --repo <owner/repo> --title "<title>" --body "<body>"
+```
+
+`<owner/repo>` は次のコマンドの出力から抽出する。
+
+```shell
+git -C "$WORKTREE_DIR" remote get-url origin
+```
+
+`<title>` は当該候補のタイトル候補、`<body>` は本文候補をそのまま使う。
+
+### 拒否候補の保存
+
+`AskUserQuestion` で提示したが選択されなかった候補を `${RUN_DIR}/skipped-suggestions.md` に Markdown 形式で書き出す。各候補について次の情報が見て取れる形にする（細部は裁量）。
+
+- タイトル候補
+- 本文候補
+- 抽出元（`eval` / `gen NOTES` / `PR スコープ外` のいずれか）
+
+### 起票結果
+
+起票が1件以上発生したとき、最終出力の `PR:` 行の直下に `Issues:` セクションとして各 issue URL を1行ずつ列挙する（後述「ユーザーへの出力」参照）。
+
 ## ユーザーへの出力
 
 ループ終了時に次の形式でちょうど印字する。最終化を実施した場合は最後に PR 行を加える。
@@ -200,6 +271,10 @@ Commit:  <最後のコミットSHA>
 Eval:    <RUN_DIR>/eval-<n>.md
 Iters:   <n>/<MAX_ITER>
 PR:      <PR URL>            # PASS のときのみ
+Issues:                      # PASS かつ起票が1件以上発生したときのみ
+  <issue URL 1>
+  <issue URL 2>
+  ...
 ```
 
 その後に2〜3文の平易な要約を添える。それ以上は書かない。
