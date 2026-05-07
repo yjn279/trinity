@@ -258,6 +258,76 @@ git -C "$WORKTREE_DIR" remote get-url origin
 
 起票が1件以上発生したとき、最終出力の `PR:` 行の直下に `Issues:` セクションとして各 issue URL を1行ずつ列挙する（後述「ユーザーへの出力」参照）。
 
+## PASS後 trinity プラグイン自身バグ・要望ヒアリング（post-run-trinity-self-issue-suggestions）
+
+### 位置
+
+本段は前段 `post-run-issue-suggestions` が終わった直後・`## ユーザーへの出力` の直前に実施する。前段とは別段として共存し、前段が存在しなくても本段は単体で成立する。
+
+### 起動条件
+
+PASS で `gh pr create`（または GitHub MCP `create_pull_request`）が成功した最終化経路でのみ実施する。
+
+- `NEEDS_REVISION` / `FAIL` で `max_iter` に達した経路では本段を実施せずスキップする。
+- 候補が 0 件のときは `AskUserQuestion` を呼ばず、起票結果出力も出さない。
+
+### 候補の抽出
+
+本 run 中の観察（オーケストレーター・Planner / Generator / Evaluator が遭遇した事象）、`${RUN_DIR}/eval-<n>.md`、Generator 検証レポート NOTES の中から、**trinity プラグイン本体（リポジトリ `yjn279/trinity`）の挙動に起因すると判断できるもの** を拾う。
+
+振り分けルール: 「対象が trinity プラグイン本体（このリポジトリ）の挙動か」「対象がユーザーのプロジェクトコードか」で振り分ける。前者のみ本段が拾い、後者は前段 `post-run-issue-suggestions` に任せる。
+
+trinity プラグイン本体に起因する例:
+
+- skill 指示が曖昧でエージェントが解釈を迷った
+- hook が期待どおり起動しなかった
+- `agents/*.md` の指示が冗長で解釈が割れた
+- `commands/run.md` の既存ステップに矛盾があった
+
+### 候補の整理
+
+各候補を次の 2 要素に分けて整理する。
+
+- **タイトル候補（短文）**: issue タイトルとして使う 1 文
+- **本文候補**: 背景・期待動作・関連ファイルパス・抽出元の `eval-<n>.md` や Generator NOTES への参照を含む
+
+候補が 16 を超える場合は重要度上位 16 件に絞り、残りを `${RUN_DIR}/skipped-trinity-self-suggestions.md` に書き出す（後述のスキップ候補保存と同じファイル）。
+
+### ユーザーへの提示（AskUserQuestion）
+
+候補が 1 件以上ある場合は `AskUserQuestion`（`multiSelect=true`）を **1 コール** 呼ぶ。候補数に応じて次のルールで問に分割する。
+
+| 候補数 | 問数 |
+| --- | --- |
+| 1〜4 | 1 問 |
+| 5〜8 | 2 問 |
+| 9〜12 | 3 問 |
+| 13〜16 | 4 問 |
+
+1 問あたり最大 4 オプション、1 コールあたり最大 4 問。各オプションのラベル＝タイトル候補、description＝本文候補の短い要約。「Other」は `AskUserQuestion` が自動付与するためテンプレートに含めない。
+
+本段の `AskUserQuestion` への参加そのものが、issue 起票と続く PR 作成への承認 touchpoint である。追加の PR 作成 Yes/No 確認は挟まない（「選択 = そのまま PR 作成へ進む」と読める）。
+
+### 同意 = 即起票
+
+ユーザーが選択した候補は追加確認プロンプトを挟まず、即 `gh issue create` を 1 件ずつ連続実行する。
+
+```shell
+gh issue create --repo yjn279/trinity --title "<title>" --body "<body>"
+```
+
+起票先リポジトリは `yjn279/trinity` でハードコードし、`git remote get-url origin` 等の動的解決は使わない（前段 `post-run-issue-suggestions` がユーザーのプロジェクトリポジトリを動的に取得するのと対照的）。
+
+### 拒否候補の保存
+
+提示したが選択されなかった候補は `${RUN_DIR}/skipped-trinity-self-suggestions.md` に書き出す。スキーマは「タイトル候補 / 本文候補 / 抽出元」が見て取れる Markdown であれば足りる。
+
+このファイル名 `skipped-trinity-self-suggestions.md` は、前段 `post-run-issue-suggestions` が使う `${RUN_DIR}/skipped-suggestions.md` とは異なり、ファイル名の衝突は発生しない。
+
+### 起票結果
+
+起票が 1 件以上発生したとき、最終出力の `Issues:` セクション内に「trinity プラグイン向け」の連続ブロックとして各 issue URL を 1 行ずつ列挙する（後述「ユーザーへの出力」参照）。前段 `post-run-issue-suggestions` の起票結果（ユーザープロジェクト向け）と並列に並ぶ。
+
 ## ユーザーへの出力
 
 ループ終了時に次の形式でちょうど印字する。最終化を実施した場合は最後に PR 行を加える。
@@ -272,10 +342,15 @@ Eval:    <RUN_DIR>/eval-<n>.md
 Iters:   <n>/<MAX_ITER>
 PR:      <PR URL>            # PASS のときのみ
 Issues:                      # PASS かつ起票が1件以上発生したときのみ
-  <issue URL 1>
-  <issue URL 2>
+  <ユーザープロジェクト向け issue URL 1>     # post-run-issue-suggestions の起票結果
+  <ユーザープロジェクト向け issue URL 2>
+  ...
+  <trinity プラグイン向け issue URL 1>     # post-run-trinity-self-issue-suggestions の起票結果
+  <trinity プラグイン向け issue URL 2>
   ...
 ```
+
+`Issues:` セクションは「ユーザープロジェクト向け」（`post-run-issue-suggestions` 段の起票結果）と「trinity プラグイン向け」（`post-run-trinity-self-issue-suggestions` 段の起票結果）の 2 連続ブロックとして並列に出力する。各ブロックはそれぞれ 1 件以上起票されたときだけ出す。両方とも 0 件の場合は `Issues:` セクション自体を出さない。
 
 その後に2〜3文の平易な要約を添える。それ以上は書かない。
 
