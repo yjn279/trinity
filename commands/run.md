@@ -15,6 +15,8 @@ argument-hint: "[--max-iter=N] <1〜4文の要件>"
 
 残りを「要件」として扱う。要件が空ならユーザーに1〜4文の要件を求めて停止する。先には進めない。
 
+この「要件」の原文を `RAW_REQUIREMENT` として保持する。Planner 起動以後、最終化・最終ターミナル出力まで、この変数を参照し続ける。要件原文は加工・要約しない。
+
 ## プリフライト（hook 担当）
 
 `UserPromptSubmit` hook が `/trinity:run` を検出したとき次を強制する。あなたはこれを再実装しない。
@@ -124,8 +126,11 @@ PR のタイトルは `${RUN_DIR}/plan.md` の先頭 H1 をそのまま使う。
 PR の本文は次の形にする。`.trinity/` は gitignore されておりレビュアーから見えないため、計画と判定の核心は本文に埋め込む。
 
 ```
+## 取り組んだタスク
+> <RAW_REQUIREMENT をそのまま転記する（加工・要約しない）>
+
 ## 概要
-<plan.md の "目的" セクション本文をそのまま貼る>
+<plan.md の "ゴール" セクション本文をそのまま貼る>
 
 ## 受け入れ基準
 <plan.md の "受け入れ基準" セクションを箇条書きでそのまま貼る>
@@ -148,6 +153,7 @@ base は `$BASE_BRANCH`、head は `$BRANCH` とする。
 
 ```shell
 Trinity result: <PASS | NEEDS_REVISION at iter <n> | FAIL at iter <n>>
+Task:    <RAW_REQUIREMENT（改行を半角スペースに正規化し、120文字を超える場合は120文字目以降を "…" で切り詰める）>
 RunDir:  <RUN_DIR>
 Branch:  <BRANCH> (base: <BASE_BRANCH>)
 Plan:    <RUN_DIR>/plan.md
@@ -156,6 +162,8 @@ Eval:    <RUN_DIR>/eval-<n>.md
 Iters:   <n>/<MAX_ITER>
 PR:      <PR URL>            # PASS のときのみ
 ```
+
+`Task:` 行は PASS / NEEDS_REVISION / FAIL のすべての終端で印字する。引用ブロック方式は採らず単一ラベル行方式を採用するため、120文字の上限と末尾 `…` による切り詰めを適用する。
 
 その後に2〜3文の平易な要約を添える。それ以上は書かない。
 
