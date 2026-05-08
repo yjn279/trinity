@@ -1,11 +1,11 @@
 ---
-description: "Planner → Generator → Evaluator のハーネスパイプラインを実行する。使用例 `/trinity:run <要件>` または `/trinity:run --max-iter=5 <要件>`。"
+description: "Planner → Generator → Evaluator のハーネスパイプラインを実行する。最終 PASS 後は push と PR 作成を行い、ユーザー承認のもとでマージとお片付けまでを完結させる。使用例 `/trinity:run <要件>` または `/trinity:run --max-iter=5 <要件>`。"
 argument-hint: "[--max-iter=N] <1〜4文の要件>"
 ---
 
 # /trinity:run — 3エージェント・ハーネスパイプライン
 
-ハーネスを取り回すスラッシュコマンドである。Plannerが要件を計画に展開し、Generatorが隔離された worktree で実装してコミットし、Evaluatorが独立に判定する。判定が PASS になるか、`max_iter` に到達するまで繰り返す。最終 PASS 後、worktree のブランチを push して PR を作成する。
+ハーネスを取り回すスラッシュコマンドである。Plannerが要件を計画に展開し、Generatorが隔離された worktree で実装してコミットし、Evaluatorが独立に判定する。判定が PASS になるか、`max_iter` に到達するまで繰り返す。最終 PASS 後、worktree のブランチを push して PR を作成し、ユーザー承認のもとでマージとお片付けまでを行う。
 
 ## 引数
 
@@ -101,21 +101,25 @@ printf '=== %s run ended: %s at iter %d/%d ===\n' "${TS}-${SLUG}" "${VERDICT}" "
 
 ## 最終化（PASS のときだけ）
 
-PASS で抜けたら次を順に行う。
+PASS で抜けたら次の4ステップを順に行う。
 
-1. ログに完了行を書く。
+### ステップ1: ログ書き込み
 
 ```shell
 printf '=== %s run ended: PASS at iter %d ===\n' "${TS}-${SLUG}" "$n" >> .trinity/trinity.log
 ```
 
-2. worktree のブランチを origin に push する。失敗はネットワーク要因のときのみ最大4回 exponential backoff で再試行する（2s, 4s, 8s, 16s）。それ以外の失敗（権限・ブランチ保護など）はそのまま停止してユーザーに報告する。
+### ステップ2: push
+
+worktree のブランチを origin に push する。失敗はネットワーク要因のときのみ最大4回 exponential backoff で再試行する（2s, 4s, 8s, 16s）。それ以外の失敗（権限・ブランチ保護など）はそのまま停止してユーザーに報告する。
 
 ```shell
 git -C "$WORKTREE_DIR" push -u origin "$BRANCH"
 ```
 
-3. PR を作成する。`/trinity:run` の起動自体がパイプライン全体（PR作成を含む）への明示的な許可なので、ユーザー確認は取らずに進める。
+### ステップ3: PR 作成
+
+`/trinity:run` の起動自体がパイプライン全体（PR 作成を含む）への明示的な許可なので、ユーザー確認は取らずに進める。
 
 PR の作成には GitHub MCP ツールを使う。スキーマが未ロードなら最初に `ToolSearch query="select:mcp__github__create_pull_request"` で読み込む。リポジトリ owner/repo は `git -C "$WORKTREE_DIR" remote get-url origin` から取り出す。
 
@@ -140,13 +144,69 @@ PR の本文は次の形にする。`.trinity/` は gitignore されておりレ
 <eval-<n>.md の "判定" セクションをそのまま貼る>
 ```
 
-base は `$BASE_BRANCH`、head は `$BRANCH` とする。
+base は `$BASE_BRANCH`、head は `$BRANCH` とする。PR 作成レスポンスから PR 番号（`PR_NUMBER`）と URL（`PR_URL`）を取り出して保持する。
+
+### ステップ4: マージ確認（`AskUserQuestion`）
+
+PR 作成直後に 1 回だけ `AskUserQuestion` を呼ぶ。ユーザーへの最終出力より前に実行する。
+
+- 質問文: `PR #<PR_NUMBER> (<PR_URL>) を作成しました。マージしてお片付けまで進めますか？`
+- 選択肢:
+  1. `マージしてお片付け (Recommended)` — リモートで PR をマージし、ローカル worktree と branch を削除する
+  2. `PR は残す（マージしない）` — マージもお片付けもしない。ユーザーが後で手動で扱う
+  3. `Other` — 自由入力。上記いずれかに解釈できないときは「PR は残す」として扱う
+
+回答が「マージしてお片付け」の場合のみ、以下の「マージ実行」と「お片付け」を行う。それ以外（否認・Other）の場合はどちらも行わない。
+
+## マージ実行（承認時のみ）
+
+GitHub MCP の `mcp__github__merge_pull_request` を使う。スキーマが未ロードなら `ToolSearch query="select:mcp__github__merge_pull_request"` で読み込む。owner/repo/PR 番号は PR 作成レスポンスから引き継ぐ。マージ方式は `squash` に固定する。
+
+マージ失敗（コンフリクト、ブランチ保護違反、必須レビュー未完了など）は再試行せずに停止し、エラー文言と `PR_URL` をユーザーに伝える。お片付けには進まない。
+
+## お片付け（マージ成功時のみ）
+
+次の手順を順に実行する。失敗したら以降をスキップし、残っている操作をユーザーに伝える。
+
+**1. リモートブランチの削除とローカルへの反映**
+
+GitHub の PR マージ後にリモートブランチを削除する。`merge_pull_request` がリモートブランチを自動削除しない場合は次を実行する。
+
+```shell
+git -C "$WORKTREE_DIR" push origin --delete "$BRANCH"
+```
+
+その後、起動側リポジトリのリモート追跡参照を更新する。
+
+```shell
+git -C "$(pwd)" fetch --prune origin
+```
+
+**2. worktree の削除**
+
+worktree ディレクトリを削除する。`--force` なしで失敗した場合（dirty な状態など）は `--force` 付きで再実行する。それでも失敗したらここで停止し、残りの操作をユーザーに伝える。
+
+```shell
+git -C "$(pwd)" worktree remove "$WORKTREE_DIR"
+# dirty で失敗した場合:
+git -C "$(pwd)" worktree remove --force "$WORKTREE_DIR"
+```
+
+**3. ローカルブランチの削除**
+
+```shell
+git -C "$(pwd)" branch -D "$BRANCH"
+```
+
+**4. 監査ログの保持**
+
+`.trinity/<run>/` ディレクトリのうち `plan.md` `eval-*.md` `trinity.log` は削除しない。worktree ディレクトリのみ消える。
 
 ## ユーザーへの出力
 
-ループ終了時に次の形式でちょうど印字する。最終化を実施した場合は最後に PR 行を加える。
+ループ終了時に次の形式でちょうど印字する。
 
-```shell
+```
 Trinity result: <PASS | NEEDS_REVISION at iter <n> | FAIL at iter <n>>
 RunDir:  <RUN_DIR>
 Branch:  <BRANCH> (base: <BASE_BRANCH>)
@@ -154,10 +214,14 @@ Plan:    <RUN_DIR>/plan.md
 Commit:  <最後のコミットSHA>
 Eval:    <RUN_DIR>/eval-<n>.md
 Iters:   <n>/<MAX_ITER>
-PR:      <PR URL>            # PASS のときのみ
+PR:      #<PR_NUMBER> <PR_URL>                        # PASS のときのみ
+Merge:   <merged | declined | failed: <理由>>          # PASS のときのみ
+Cleanup: <done | skipped | partial: <残っている操作>>   # PASS のときのみ
 ```
 
-その後に2〜3文の平易な要約を添える。それ以上は書かない。
+NEEDS_REVISION / FAIL のまま MAX_ITER に到達した場合は、push・PR 作成・マージ確認・お片付けのいずれも行わない。`PR:`・`Merge:`・`Cleanup:` 行は出力しない。
+
+その後に2〜3文の平易な要約を添える。否認時またはお片付けが partial になった場合は、ユーザーが手動で実行すべきコマンドをその場に表示する。それ以上は書かない。
 
 ## オーケストレーター（あなた）への制約
 
@@ -167,4 +231,10 @@ PR:      <PR URL>            # PASS のときのみ
 
 エージェントの出力を要約して次のエージェントに渡さない。`RUN_DIR` を渡し、次のエージェントに自分で読ませる。Evaluatorに必要な独立性はこれで担保される。
 
-worktree の後始末は行わない。`.trinity/` は gitignore されており、worktree は監査ログとして残す。ユーザーが不要と判断したときに `git worktree remove` する。
+承認時のみ worktree の後始末を行う。否認時は `.trinity/` が gitignore されており、worktree は監査ログとして残る。否認または partial 状態のときは、次のコマンドをユーザーに示す。
+
+```shell
+git -C "$(pwd)" worktree remove "$WORKTREE_DIR"   # worktree 削除
+git -C "$(pwd)" branch -D "$BRANCH"               # ローカルブランチ削除
+git -C "$(pwd)" fetch --prune origin              # リモート追跡参照の更新
+```
