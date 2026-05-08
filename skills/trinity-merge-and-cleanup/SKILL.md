@@ -1,11 +1,11 @@
 ---
 name: trinity-merge-and-cleanup
-description: Trinity の PR 作成直後に「マージしてお片付けまで進めるか」をユーザーに確認し、承認時のみ squash マージ・リモートブランチ削除・worktree 削除・ローカルブランチ削除までを実行する。`trinity-pr-from-artifacts` で PR 作成と PR 番号/URL の取得が終わった直後に必ず参照する。`AskUserQuestion` の選択肢、否認時に残っている操作のユーザーへの提示、マージ失敗時の停止規約、お片付けの順序とフォールバック（`worktree remove --force`）を規定する。
+description: Trinity の PR 作成直後に「マージしてお片付けまで進めるか」をユーザーに確認し、承認時のみ squash マージ・リモートブランチ削除・worktree 削除・ローカルブランチ削除・`.trinity/<run>/` 削除までを実行する。`trinity-pr-from-artifacts` で PR 作成と PR 番号/URL の取得が終わった直後に必ず参照する。`AskUserQuestion` は最大 2 回（マージ確認 1 回 + 否認時のヒアリング 1 回）。マージ失敗時の停止規約、お片付けの順序とフォールバックを規定する。
 ---
 
 # trinity-merge-and-cleanup
 
-Trinity の最終化は「PR を作るだけ」では完結しない。レビュー不要の自動運転タスクではユーザーがマージとお片付けまで一気に進めたい一方、レビューを挟みたいタスクでは PR を残しておきたい。本スキルはこの分岐をユーザーに 1 回だけ問い、承認時にマージとお片付けまで実行する。
+Trinity の最終化は「PR を作るだけ」では完結しない。レビュー不要の自動運転タスクではユーザーがマージとお片付けまで一気に進めたい一方、追加の改善が必要なタスクでは PR を残して次のインプットをヒアリングしたい。本スキルはこの分岐をユーザーに 1 回だけ問い、承認時にマージとお片付けまで実行する。否認時は改善項目をヒアリングする。
 
 ## 前提
 
@@ -15,20 +15,19 @@ Trinity の最終化は「PR を作るだけ」では完結しない。レビュ
 - `PR_URL` — PR の URL
 - `BRANCH` — `trinity/<TS>-<slug>`
 - `WORKTREE_DIR` — `${RUN_DIR}/worktree` の絶対パス
+- `RUN_DIR` — `.trinity/<TS>-<slug>` の絶対パス
 - 起動側リポジトリのリポジトリルート（オーケストレーターが `pwd` で取れる）
 
 ## マージ確認
 
-PR 作成直後、ユーザーへの最終出力より前に `AskUserQuestion` を 1 回だけ呼ぶ。複数回呼ばない（注意力を浪費する）。
+PR 作成直後、ユーザーへの最終出力より前に `AskUserQuestion` を 1 回目として呼ぶ。`AskUserQuestion` の合計呼び出し回数は最大 2 回（マージ確認 1 回 + 否認時のヒアリング 1 回）に限定する。「マージしてお片付け」を選んだ場合は 1 回で終わる。
 
 - 質問: `PR #<PR_NUMBER> (<PR_URL>) を作成しました。マージしてお片付けまで進めますか？`
 - 選択肢:
-  1. `マージしてお片付け (Recommended)` — リモートで PR をマージし、ローカル worktree と branch を削除する
-  2. `PR は残す（マージしない）` — マージもお片付けもしない。ユーザーが後で手動で扱う
+  1. `マージしてお片付け (Recommended)` — リモートで PR をマージし、ローカル worktree と branch と `.trinity/<run>/` を削除する
+  2. `PR は残して改善項目を相談する` — マージとお片付けをせず、追加で改善項目をヒアリングする
 
-`Other`（自由入力）は `AskUserQuestion` が自動で付与する。`Other` の回答が「マージしてお片付け」と明確に解釈できない場合は **「PR は残す」として扱う**（フェイルセーフ側）。判定に迷ったら停止せずに「PR は残す」に倒す。
-
-回答が「マージしてお片付け」のときだけ、以下のマージ実行とお片付けに進む。それ以外（否認・解釈不能な Other）はどちらも行わない。
+`Other`（自由入力）は `AskUserQuestion` が自動で付与する。`Other` の回答が「マージしてお片付け」と明確に解釈できる場合は 1 番目扱い。それ以外は 2 番目扱いとし、ヒアリングを続ける。判定に迷ったら 2 番目（ヒアリング側）に倒す。
 
 ## マージ実行（承認時のみ）
 
@@ -44,7 +43,7 @@ owner / repo / PR 番号は `trinity-pr-from-artifacts` で取得した値を引
 
 ## お片付け（マージ成功時のみ）
 
-次の手順を順に実行する。1 ステップが失敗したら以降をスキップし、未実行の操作を「次イテレーションで実行すべき手動コマンド」としてユーザーに伝える。`Cleanup:` 行に `partial: <残っている操作>` を出す。
+次の手順を順に実行する。1 ステップが失敗した場合は以下のフォールバックで Trinity が完結させる。すべてのフォールバックでも失敗した場合に限り、その特定のステップのみをユーザーに伝える。
 
 ### 1. リモートブランチの削除とローカル fetch
 
@@ -54,7 +53,11 @@ GitHub の PR マージで自動削除されない場合に備えて、明示的
 git -C "$WORKTREE_DIR" push origin --delete "$BRANCH"
 ```
 
-このコマンドの失敗は致命的ではない（既に削除済みなら `remote ref does not exist` で返る）。stderr が「既に削除済み」を示す場合は成功扱いにし、それ以外は失敗扱い。
+このコマンドの失敗は致命的ではない（既に削除済みなら `remote ref does not exist` で返る）。stderr が「既に削除済み」を示す場合は成功扱いにし、それ以外は失敗扱い。失敗した場合は次のフォールバックで再試行する。
+
+```shell
+gh api -X DELETE "repos/<owner>/<repo>/git/refs/heads/$BRANCH"
+```
 
 その後、起動側リポジトリのリモート追跡参照を更新する。
 
@@ -76,7 +79,11 @@ git -C "$(pwd)" worktree remove "$WORKTREE_DIR"
 git -C "$(pwd)" worktree remove --force "$WORKTREE_DIR"
 ```
 
-それでも失敗したらここで停止し、未実行の `branch -D` をユーザーに提示する。
+それでも失敗した場合は `rm -rf` と `worktree prune` で完結させる。
+
+```shell
+rm -rf "$WORKTREE_DIR" && git -C "$(pwd)" worktree prune
+```
 
 ### 3. ローカルブランチの削除
 
@@ -84,38 +91,51 @@ git -C "$(pwd)" worktree remove --force "$WORKTREE_DIR"
 git -C "$(pwd)" branch -D "$BRANCH"
 ```
 
-Trinity の流儀では起動側リポジトリ自身がこのブランチを使っていることはない（`BASE_BRANCH` 上で起動するため）。`-D` で安全に消せる。
-
-### 4. 監査ログの保持
-
-`.trinity/<run>/` の `plan.md` `eval-*.md` `trinity.log` は**削除しない**。worktree ディレクトリだけ消える。これらは振り返りと再現のために残す。
-
-## 否認時・partial 時のユーザー提示
-
-ユーザーが「PR は残す」を選んだ場合、または `Other` がフェイルセーフで「残す」になった場合、お片付けは行わない。最終出力後に次のコマンドをそのまま 3 行印字して、ユーザーがあとで実行できるようにする。
+Trinity の流儀では起動側リポジトリ自身がこのブランチを使っていることはない（`BASE_BRANCH` 上で起動するため）。`-D` で安全に消せる。失敗した場合は次のフォールバックで完結させる。
 
 ```shell
-git -C "$(pwd)" worktree remove "$WORKTREE_DIR"   # worktree 削除
-git -C "$(pwd)" branch -D "$BRANCH"               # ローカルブランチ削除
-git -C "$(pwd)" fetch --prune origin              # リモート追跡参照の更新
+git -C "$(pwd)" update-ref -d "refs/heads/$BRANCH"
 ```
 
-お片付けが partial（途中で失敗）の場合は、未実行のコマンドだけを抜粋して提示する。実行済みのコマンドは出さない。
+### 4. `.trinity/<run>/` の削除
+
+run ディレクトリ全体（`plan.md` `eval-*.md` `worktree/` を含む）を削除する。
+
+```shell
+rm -rf "$RUN_DIR"
+```
+
+`.trinity/trinity.log`（リポジトリ全体の通算ログ）は `RUN_DIR` 外にあるため削除しない。
+
+## 否認時のヒアリング
+
+ユーザーが「PR は残して改善項目を相談する」を選んだ場合、または `Other` が 2 番目扱いになった場合、マージとお片付けは行わない。代わりに `AskUserQuestion` を 2 回目として 1 回だけ呼び、改善項目をヒアリングする。
+
+- 質問: `改善したい内容を教えてください。次の /trinity:run のインプットとして使います。`
+- 選択肢: なし（自由入力）
+
+ユーザーの回答を受け取ったら、最終出力の末尾に次の行を加える。
+
+```
+Followup: <ユーザーの回答をそのまま引用>
+```
+
+これ以上 `AskUserQuestion` を呼ばない。次の `/trinity:run` への自動投入は行わない。ユーザーが `Followup:` の内容を次回の要件として手動で使う。
 
 ## 受け渡し
 
-このスキルが返す情報は次のとおり。`trinity-iter-loop` の最終出力に組み込む。
+このスキルが返す情報は次のとおり。最終出力に組み込む。
 
 - `MERGE_RESULT` ∈ { `merged`, `declined`, `failed: <理由>` }
 - `CLEANUP_RESULT` ∈ { `done`, `skipped`, `partial: <残っている操作>` }
 
-最終出力フォーマットの組み立ては本スキルの責務外。`trinity-iter-loop` のテンプレに値を流し込む。
+最終出力フォーマットの組み立ては本スキルの責務外。`/trinity:run` コマンドのテンプレに値を流し込む。
 
 ## やってはいけないこと
 
-- `AskUserQuestion` を複数回呼ぶ（必ず 1 回にまとめる）
+- `AskUserQuestion` を 3 回以上呼ぶ（合計最大 2 回まで）
 - マージ失敗を再試行する（コンフリクトもブランチ保護違反も再試行で解決しない）
-- マージ方式を `merge` や `rebase` にする（`squash` で固定。ハーネス由来の細かいコミットを 1 本に集約することが PR の意図）
+- マージ方式を `merge` や `rebase` にする（`squash` で固定）
 - `worktree remove --force` を最初から打つ（dirty を握りつぶすので、まず非 force で試す）
-- `.trinity/<run>/` の plan.md / eval-*.md / trinity.log を消す（監査価値がある）
-- 否認したのにユーザー提示の手動コマンドを出さない（ユーザーが行き詰まる）
+- お片付けの各ステップで即座にユーザーに投げる（フォールバックを試してから報告する）
+- 否認時にマージやお片付けを勝手に実行する
