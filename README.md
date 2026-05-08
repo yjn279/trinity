@@ -188,6 +188,13 @@ trinity/
 │   └── evaluator.md    # sonnet · diff＋plan.md → eval-N.md
 ├── commands/
 │   └── run.md          # /trinity:run オーケストレーター
+├── skills/             # オーケストレーター用フロー定義
+│   ├── trinity-orchestration-discipline/  # 段間で守る不変規範
+│   ├── trinity-rundir-worktree/           # RUN_DIR / 隔離 worktree の作成
+│   ├── trinity-iter-loop/                 # 3 エージェント直列ループと判定分岐
+│   ├── trinity-branch-push/               # 最終 PASS 後の push と再試行規約
+│   ├── trinity-pr-from-artifacts/         # plan.md / eval-N.md → PR 作成
+│   └── trinity-merge-and-cleanup/         # マージ確認・squash マージ・お片付け
 ├── hooks/
 │   └── hooks.json      # SessionStart / UserPromptSubmit / SubagentStop
 ├── settings.json       # trinity 固有の事前承認ツール
