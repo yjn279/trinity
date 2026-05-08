@@ -115,7 +115,7 @@ printf '=== %s run ended: PASS at iter %d ===\n' "${TS}-${SLUG}" "$n" >> .trinit
 git -C "$WORKTREE_DIR" push -u origin "$BRANCH"
 ```
 
-3. PR を作成する。`/trinity:run` の起動自体がパイプライン全体（PR作成を含む）への明示的な許可なので、ユーザー確認は取らずに進める。
+3. PR を作成する。`/trinity:run` の起動自体がパイプライン全体（push と PR 作成を含む）への明示的な許可なので、ここまではユーザー確認を取らずに進める。ただしマージは破壊的な操作なので、PR 作成後に別途ユーザー確認を取る。
 
 PR の作成には GitHub MCP ツールを使う。スキーマが未ロードなら最初に `ToolSearch query="select:mcp__github__create_pull_request"` で読み込む。リポジトリ owner/repo は `git -C "$WORKTREE_DIR" remote get-url origin` から取り出す。
 
@@ -142,6 +142,97 @@ PR の本文は次の形にする。`.trinity/` は gitignore されておりレ
 
 base は `$BASE_BRANCH`、head は `$BRANCH` とする。
 
+`create_pull_request` のレスポンスから `number` フィールド（PR 番号）と `html_url` フィールド（PR URL）を保持する。
+
+4. PR 番号と URL をユーザーに見せる。次の形式で印字する。
+
+```
+PR #<番号> が作成されました: <PR URL>
+```
+
+5. `AskUserQuestion` を 1 回だけ呼び出し、マージするかどうかを尋ねる。
+
+質問文には次の情報を含める。
+- PR のタイトルと番号（`#<番号>`）
+- PR URL
+- マージ後に行うお片付けの内容（worktree ディレクトリの撤去とローカルブランチの削除）
+
+選択肢は次の3つを順に並べる。
+
+1. `Squash and merge, then clean up (Recommended)` — GitHub の squash merge を実行しお片付けする。
+2. `Create a merge commit, then clean up` — 通常の merge commit を作成しお片付けする。
+3. `Leave the PR open` — マージせず終了。お片付けもしない。
+
+6. ユーザーの回答に応じて次のとおり分岐する。
+
+**選択肢 1 または 2 が選ばれた場合（マージ実行）:**
+
+GitHub MCP の `merge_pull_request` 相当ツールを呼び出してマージする。`merge_method` は選択肢 1 なら `squash`、選択肢 2 なら `merge` を渡す。
+
+マージが成功した場合は次のログを書く。
+
+```shell
+printf '=== %s merged: %s at #%s ===\n' "${TS}-${SLUG}" "<squash|merge>" "<PR番号>" >> .trinity/trinity.log
+```
+
+マージが失敗した場合（コンフリクト、ブランチ保護、CI 未通過など）はその旨をユーザーに報告し、お片付けをスキップして終了する。PR はそのまま残す。リトライしない。次のログを書く。
+
+```shell
+printf '=== %s merge failed: %s ===\n' "${TS}-${SLUG}" "<失敗理由>" >> .trinity/trinity.log
+```
+
+**マージ成功後のお片付け:**
+
+お片付けは次の順番で行う。途中のステップが失敗しても、残りのステップを可能な限り続行する。失敗の内容は記録しておき、最終出力の `Cleanup:` 行に反映する。
+
+1. リモートブランチを削除する。GitHub の「マージ後に自動でブランチを削除」設定が有効な場合はすでに削除済みの可能性があるため、エラーは無視する。
+
+```shell
+git push origin --delete "$BRANCH"
+```
+
+2. worktree 側のチェックアウトをデタッチ状態にして、`git worktree remove` がエラーなく通るようにする。
+
+```shell
+git -C "$WORKTREE_DIR" checkout --detach
+```
+
+3. worktree を撤去する。
+
+```shell
+git worktree remove "$WORKTREE_DIR"
+```
+
+4. ローカルブランチを削除する。
+
+```shell
+git branch -D "$BRANCH"
+```
+
+5. `${RUN_DIR}/plan.md` と `${RUN_DIR}/eval-*.md` は**削除しない**。監査ログとして残す。
+
+お片付けが完了したら次のログを書く。
+
+```shell
+printf '=== %s cleaned up worktree and branch ===\n' "${TS}-${SLUG}" >> .trinity/trinity.log
+```
+
+お片付けの途中で失敗が生じた場合は `Cleanup: partial: <details>` として報告する。
+
+**選択肢 3 が選ばれた場合（マージしない）:**
+
+PR をそのまま残し、お片付けはせずに終了する。次のログを書く。
+
+```shell
+printf '=== %s merge declined by user ===\n' "${TS}-${SLUG}" >> .trinity/trinity.log
+```
+
+**「Other」自由入力が返された場合:**
+
+3つの選択肢のいずれにも該当しない入力を受けた場合は、安全側（マージしない・お片付けしない）に倒して終了する。
+
+**PR が作成されなかった経路（`MAX_ITER` 到達で PASS なし、Generator/Evaluator 失敗、push 失敗など）では、マージ確認は発火しない。**
+
 ## ユーザーへの出力
 
 ループ終了時に次の形式でちょうど印字する。最終化を実施した場合は最後に PR 行を加える。
@@ -154,8 +245,12 @@ Plan:    <RUN_DIR>/plan.md
 Commit:  <最後のコミットSHA>
 Eval:    <RUN_DIR>/eval-<n>.md
 Iters:   <n>/<MAX_ITER>
-PR:      <PR URL>            # PASS のときのみ
+PR:      #<番号> <PR URL>                      # PASS のときのみ
+Merge:   <squash | merge | declined | failed: <reason>>  # PASS のときのみ
+Cleanup: <done | skipped (PR open) | partial: <details>> # PASS のときのみ
 ```
+
+`PR:` `Merge:` `Cleanup:` の3行は PASS で PR が作成された場合のみ出力する。`MAX_ITER` 到達で PASS なし、Generator/Evaluator 失敗、push 失敗など「PR が作られない経路」ではこれらの行は出さない。
 
 その後に2〜3文の平易な要約を添える。それ以上は書かない。
 
@@ -167,4 +262,4 @@ PR:      <PR URL>            # PASS のときのみ
 
 エージェントの出力を要約して次のエージェントに渡さない。`RUN_DIR` を渡し、次のエージェントに自分で読ませる。Evaluatorに必要な独立性はこれで担保される。
 
-worktree の後始末は行わない。`.trinity/` は gitignore されており、worktree は監査ログとして残す。ユーザーが不要と判断したときに `git worktree remove` する。
+worktree の後始末は「マージ確認でユーザーが承認した場合のみ」行う。承認された場合はハーネスが自動でお片付けする（手順は「最終化」セクションを参照）。ユーザーが `Leave the PR open` を選んだ場合は worktree とブランチをそのまま残す。`.trinity/<run>/plan.md` と `.trinity/<run>/eval-*.md` は承認・拒否にかかわらず監査ログとして保持する。

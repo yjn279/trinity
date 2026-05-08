@@ -5,7 +5,9 @@
       "Bash(git worktree:*)",
       "Bash(git -C *:*)",
       "Bash(mkdir -p:*)",
-      "Bash(cat .trinity/*)"
+      "Bash(cat .trinity/*)",
+      "Bash(git push origin --delete:*)",
+      "Bash(git branch -D:*)"
     ]
   }
 }
