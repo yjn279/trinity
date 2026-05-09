@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s generator finished on %s\\n' \"$(date -u +%FT%TZ)\" \"$(git rev-parse --short HEAD 2>/dev/null || echo no-git)\" >> .trinity/trinity.log"
+            "command": "printf '%s generator chunk finished on %s\\n' \"$(date -u +%FT%TZ)\" \"$(git rev-parse --short HEAD 2>/dev/null || echo no-git)\" >> .trinity/trinity.log"
           }
         ]
       },
