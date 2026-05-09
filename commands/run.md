@@ -1,19 +1,28 @@
 ---
-description: "Planner → Generator → Evaluator のハーネスパイプラインを実行する。使用例 `/trinity:run <要件>` または `/trinity:run --max-iter=5 <要件>`。"
+description: "Planner → Generator → Evaluator のハーネスパイプラインを実行する。最終 PASS 後は push と PR 作成を行い、ユーザー承認のもとでマージとクリーンアップまでを完結させる。使用例 `/trinity:run <要件>` または `/trinity:run --max-iter=5 <要件>`。"
 argument-hint: "[--max-iter=N] <1〜4文の要件>"
 ---
 
 # /trinity:run — 3エージェント・ハーネスパイプライン
 
-ハーネスを取り回すスラッシュコマンドである。Plannerが要件を計画に展開し、Generatorが隔離された worktree で実装してコミットし、Evaluatorが独立に判定する。判定が PASS になるか、`max_iter` に到達するまで繰り返す。最終 PASS 後、worktree のブランチを push して PR を作成する。
+ハーネスを取り回すスラッシュコマンドである。Planner が要件を計画に展開し、Generator が隔離された worktree で実装してコミットし、Evaluator が独立に判定する。判定が PASS になるか、`max_iter` に到達するまで繰り返す。最終 PASS 後、worktree のブランチを push して PR を作成し、ユーザー承認のもとでマージとクリーンアップまでを行う。
+
+## 使うスキル
+
+このコマンドの実行手順は次の 3 スキルに分割されている。各フェーズで該当スキルを参照し、その手順に従う。スキル本文を要約せず、書かれている規範をそのまま守ること。
+
+- `git-worktree` — 起動直後、要件由来のスラッグだけ渡して隔離 worktree を作成する。TS / SLUG / BRANCH / RUN_DIR / WORKTREE_DIR / BASE_BRANCH はスキルが返す
+- `git-pull-request` — PASS 後の origin への push と PR 作成を一連フローで実行する。呼び出し側から渡すのは PR タイトルと PR 本文のみで、`PR_NUMBER` / `PR_URL` を返す
+- `git-merge` — マージ可否確認の `AskUserQuestion` から、承認時のマージ・後始末、否認時の改善項目ヒアリングまでを内蔵する。呼び出し側から渡すのは PR URL のみ
 
 ## 引数
 
 生の引数は `$ARGUMENTS` で受け取る。次の手順で解釈する。
 
-`$ARGUMENTS` の先頭が `--max-iter=N`（N は正の整数）であれば、`MAX_ITER = N` とし、そのトークンを取り除く。先頭が一致しない場合は `MAX_ITER = 15`（既定値）を使う。
-
-残りを「要件」として扱う。要件が空ならユーザーに1〜4文の要件を求めて停止する。先には進めない。
+- 先頭が `--max-iter=N`（N は正の整数）であれば `MAX_ITER = N` とし、そのトークンを取り除く
+- 先頭が一致しない場合は `MAX_ITER = 15`（既定値）
+- 残りを「要件」として扱う。要件が空ならユーザーに 1〜4 文の要件を求めて停止する
+- `MAX_ITER` は 1 未満を受け付けない。0 以下なら停止して報告する
 
 ## プリフライト（hook 担当）
 
@@ -23,50 +32,178 @@ argument-hint: "[--max-iter=N] <1〜4文の要件>"
 - ワーキングツリーが clean であること（汚れていれば prompt がブロックされる）
 - 現在のブランチを stderr に表示する
 
-このため、本コマンドが起動した時点で「現在のブランチが clean なベースライン」であることが保証されている。これを `BASE_BRANCH` として保持する。
+このため、本コマンドが起動した時点で「現在のブランチが clean なベースライン」であることが保証されている。
 
-```shell
-BASE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-```
+## ハーネス規範（全フェーズで守る不変ルール）
 
-## run ディレクトリと worktree の作成
+これらのルールは全フェーズで例外なく適用する。
 
-要件からスラッグを生成し、run ディレクトリと隔離 worktree を作る。スラッグは2〜5語の英字 kebab-case にする（例: 「ユーザー設定ページにテーマトグルを追加する」→ `add-theme-toggle`）。
+### 直列で呼ぶ
 
-```shell
-TS=$(date -u +%Y%m%dT%H%M%SZ)
-SLUG=<要件から生成した英字 kebab-case>
-RUN_DIR="$(pwd)/.trinity/${TS}-${SLUG}"
-WORKTREE_DIR="${RUN_DIR}/worktree"
-BRANCH="trinity/${TS}-${SLUG}"
-mkdir -p "$RUN_DIR"
-git worktree add -b "$BRANCH" "$WORKTREE_DIR" "$BASE_BRANCH"
-printf '=== %s run started on %s (base=%s) ===\n' "${TS}-${SLUG}" "${BRANCH}" "${BASE_BRANCH}" >> .trinity/trinity.log
-```
+サブエージェントは並列ではなく直列に呼び出す。各段は前段の成果ファイル（`plan.md` / コミット / `eval-<n>.md`）に依存している。Evaluator はコミット SHA を入力に取るので、Generator が終わってからしか起動できない。並列化すると存在しない SHA を渡してしまう。Generator の同一イテレーション内チャンクも同様に直列で起動する（並列起動はしない）。
 
-同一タイムスタンプで衝突した場合は `SLUG` の末尾に `-2` `-3` などを付ける。
+### 段と段のあいだでコードに触らない
 
-`$RUN_DIR` と `$WORKTREE_DIR` と `$BRANCH` と `$BASE_BRANCH` を以降の全段に絶対パスで渡す。
+オーケストレーターが `Read` `Edit` `Bash` で `${WORKTREE_DIR}` 内のコードを読んだり編集したりしてはいけない。例外なく禁止する。触ってよいのは次だけである。
 
-## パイプライン（n = 1 .. MAX_ITER のループ）
+- `${RUN_DIR}` 配下のファイル名一覧の確認（読まない、開かない）
+- `.trinity/trinity.log` への開始行・終了行の追記
+- `git -C "$WORKTREE_DIR" rev-parse` などの非破壊・非読取の git メタ問い合わせ
+- `git -C "$WORKTREE_DIR" push`（最終化のみ）
 
-### Planner
+### エージェント出力を要約しない
 
-`trinity:planner` サブエージェントを次の入力で起動する。
+Generator の検証レポートを圧縮して Evaluator に渡してはいけない。Generator が書いたレポート本文をそのまま渡す。各段への入力は次のとおり最小化する。
 
-- 要件（原文ママ）
-- `Iteration: <n>`
-- `RUN_DIR: <絶対パス>`
-- `WORKTREE_DIR: <絶対パス>`（実装対象のコードはこの中にある）
-- `n > 1` の場合は、直前の評価レポートが `${RUN_DIR}/eval-<n-1>.md` にある旨を伝える
+- Planner: 要件文、`Iteration`、`RUN_DIR`、`WORKTREE_DIR`、必要なら `eval-<n-1>.md` の存在告知
+- Generator（チャンクごと）: `RUN_DIR`、`WORKTREE_DIR`、`BRANCH`、`Iteration`、`ChunkIndex`、`ChunkTotal`、`ChunkFiles`
+- Evaluator: `RUN_DIR`、`WORKTREE_DIR`、`Iteration`、イテレーション内最終コミット SHA、`ChunkTotal`、最終チャンクの検証レポートパス（`${RUN_DIR}/gen-<n>-chunk-<ChunkTotal>.md`）
 
-返却された計画ファイルパス（必ず `${RUN_DIR}/plan.md`）を保持する。Plannerが確認のための質問をユーザーに投げた場合は、その内容をユーザーに見せて停止する。
+### 最終出力以外を喋らない
 
-### Generator
+ループ中、各段の途中報告をユーザーに垂れ流さない。最終出力フォーマット 1 ブロック + 2〜3 文の要約だけを返す。例外は次の場合だけである。
+
+- Planner が `AskUserQuestion` で確認を投げた → そのまま見せて停止
+- Generator がコミットを作れずに停止 → 失敗内容を見せて停止
+- push に恒久失敗が起きた → 原文を見せて停止（`git-pull-request` 参照）
+- `git-merge` スキル内のマージ可否確認 `AskUserQuestion`（実行手順 4c） → ユーザー回答を待つ
+- PASS 後の起票候補ヒアリング `AskUserQuestion`（実行手順 4d / 4e） → ユーザー回答を待つ
+
+## 実行手順
+
+1. **準備**: `git-worktree` スキルを呼んで隔離 worktree を作成する。
+
+   呼び出し側で要件文から kebab-case のスラッグ（2〜5 語）を生成し、それだけをスキルに渡す。リポジトリパス・ベースブランチ・ログファイルパスはスキル内で推測する。
+
+   - `SLUG` = 要件文から派生した kebab-case のスラッグ（例: 「ユーザー設定ページにテーマトグルを追加する」→ `add-theme-toggle`）
+
+   スキルから次の値を受け取り、以降のすべてのフェーズで使う。
+
+   - `TS` — タイムスタンプ
+   - `SLUG` — 確定した slug（衝突時は `-2` `-3` を付けて一意化された値）
+   - `BRANCH` — ブランチ名（`trinity/<TS>-<SLUG>` 形式）
+   - `RUN_DIR` — run ディレクトリの絶対パス
+   - `WORKTREE_DIR` — worktree の絶対パス
+   - `BASE_BRANCH` — スキルが推測した base ブランチ名
+
+2. **ループ**: `n = 1 .. MAX_ITER` で次を順に呼ぶ。並列にしない。
+
+   - **Planner**: `trinity:planner` サブエージェントを起動。要件（原文ママ）、`Iteration: <n>`、`RUN_DIR`、`WORKTREE_DIR`、`n > 1` なら直前 `eval-<n-1>.md` の存在告知を渡す。`${RUN_DIR}/plan.md` を書く（再計画時は上書き）。Planner が `AskUserQuestion` を投げた場合はそのまま見せて停止する。
+   - **Generator（チャンク反復）**: `${RUN_DIR}/plan.md` の `## 影響範囲` をパースしてチャンク総数 `M` とチャンク列を決定し、`i = 1..M` の順で `trinity:generator` サブエージェントを直列に起動する。詳細は後述「Generator チャンク分割の契約」に従う。チャンク `i` のレポートは `${RUN_DIR}/gen-<n>-chunk-<i>.md` に書かれる。あるチャンクで Generator が「検証失敗 → 自力修正不能 → コミット未作成」となったら、後続チャンクを起動せずループを停止し、失敗チャンク番号 `i/M` ・最後のレポートパス・失敗内容をユーザーに報告する。存在しないコミットを Evaluator に渡してはいけない。
+   - **Evaluator**: 全チャンク成功時のみ起動する。`LAST_SHA=$(git -C "$WORKTREE_DIR" rev-parse HEAD)` でイテレーション内最終コミット SHA を取得し、`trinity:evaluator` サブエージェントに `RUN_DIR`、`WORKTREE_DIR`、`Iteration`、`LAST_SHA`、`ChunkTotal: <M>`、最終チャンクのレポートパス（`${RUN_DIR}/gen-<n>-chunk-<M>.md`）を渡す。`${RUN_DIR}/eval-<n>.md` と判定（`PASS` / `NEEDS_REVISION` / `FAIL`）を受け取る。
+
+3. **判定に応じた分岐**:
+
+   | 判定 | 残りイテレーション | 動作 |
+   | --- | --- | --- |
+   | `PASS` | — | ループ脱出。以降の最終化フェーズに進む |
+   | `NEEDS_REVISION` | `n < MAX_ITER` | 続行。Planner は次周回で `plan.md` を**上書き** |
+   | `FAIL` | `n < MAX_ITER` | 続行。Planner はより踏み込んだ再計画を行う |
+   | `NEEDS_REVISION` または `FAIL` | `n == MAX_ITER` | 最終化をスキップ。最新の評価レポートのパスと未解決の指摘を表示して停止 |
+
+   `FAIL` を「だいたい OK」と解釈してループを抜けない。`MAX_ITER` を黙って延長しない。
+
+4. **PASS のとき**: 次を順に実行する。
+
+   **a. PR タイトルと PR 本文を組み立てる**
+
+   PR タイトルは `${RUN_DIR}/plan.md` の先頭 H1 をそのまま使う。70 文字を超えるなら冒頭で切り詰める。
+
+   PR 本文は次の形にする。`.trinity/` は gitignore されておりレビュアーから見えないため、計画と判定の核心は本文に埋め込む。
+
+   ```
+   ## 概要
+   <plan.md の "目的" セクション本文をそのまま貼る>
+
+   ## 受け入れ基準
+   <plan.md の "受け入れ基準" セクションを箇条書きでそのまま貼る>
+
+   ## Trinity 実行サマリ
+   - Run: <RUN_DIR を repo ルートからの相対パスで>
+   - Iterations: <n>/<MAX_ITER>
+   - Final verdict: PASS
+   - Final commit: <短縮SHA>
+
+   ## 判定根拠（最終 Evaluator レポートからの抜粋）
+   <eval-<n>.md の "判定" セクションをそのまま貼る>
+   ```
+
+   **b. `git-pull-request` を呼ぶ**
+
+   組み立てた PR タイトルと PR 本文だけをスキルに渡す。worktree パス・ブランチ名・ベースブランチ・リモート情報はスキル内で推測する。
+
+   - `PR_TITLE` = 上で組み立てた PR タイトル
+   - `PR_BODY` = 上で組み立てた PR 本文
+
+   返ってきた `PR_NUMBER` / `PR_URL` を保持する。
+
+   **c. `git-merge` を呼ぶ**
+
+   PR URL だけをスキルに渡す。マージ可否確認の `AskUserQuestion`、承認時のマージ・後始末（リモート/ローカルブランチ削除、worktree 削除、run ディレクトリ削除）、否認時の改善項目ヒアリングまで、すべてスキル内で完結する。ブランチ名・worktree パス・run ディレクトリのパス・リポジトリパスはスキル内で推測する。
+
+   - `PR_URL` = 上で取得した値
+
+   スキルから次の値を受け取る。
+
+   - `MERGE_RESULT` — `merged` / `closed` / `needs-revision-with-followup-requirements` のいずれか
+   - `FOLLOWUP_REQUIREMENT` — `needs-revision-with-followup-requirements` のときだけ返る、次回実行用の要件文
+
+   `MERGE_RESULT` が `needs-revision-with-followup-requirements` の場合は、`FOLLOWUP_REQUIREMENT` を `Followup: <内容>` として最終出力に反映する。
+
+   **d. PASS 後の起票候補ヒアリング（ユーザープロジェクト向け）**
+
+   PR 作成（4b）が成功した経路では、4c の結果（マージ・クローズ・needs-revision）にかかわらず本ステップを実施する。詳細は後述「PASS後の起票候補ヒアリング（post-run-issue-suggestions）」に従う。`AskUserQuestion` を 1 コール呼び（候補数に応じて 1〜4 問に分割）、選択された候補は即 `gh issue create` する。起票結果は最終出力（ステップ 7）の `Issues:` セクションに反映する。
+
+   **e. PASS 後の trinity プラグイン自身バグ・要望ヒアリング**
+
+   ステップ 4d の直後、ステップ 6/7 の直前に実施する。詳細は後述「PASS後 trinity プラグイン自身バグ・要望ヒアリング（post-run-trinity-self-issue-suggestions）」に従う。起票先リポジトリは `yjn279/trinity` でハードコード。起票結果は最終出力の `Issues:` セクションに反映する。
+
+5. **PASS でない / `MAX_ITER` 到達**: 最終化をスキップし、最新の評価レポートのパスと未解決の指摘をユーザーに表示して停止。push も PR 作成もマージ確認もクリーンアップも起票候補ヒアリングも行わない。
+
+6. **ログ**: ループ脱出時または `MAX_ITER` 到達時に `.trinity/trinity.log` に終了行を追記する。
+
+   ```shell
+   # PASS で抜けたとき
+   printf '=== %s run ended: PASS at iter %d ===\n' "${TS}-${SLUG}" "$n" >> .trinity/trinity.log
+
+   # MAX_ITER で抜けたとき
+   printf '=== %s run ended: %s at iter %d/%d ===\n' "${TS}-${SLUG}" "${VERDICT}" "$n" "$MAX_ITER" >> .trinity/trinity.log
+   ```
+
+7. **最終出力**: 次のフォーマットでちょうど印字し、2〜3 文の要約を添える。最終化を実施した（PASS で抜けた）場合だけ `PR:` `Merge:` `Cleanup:` の 3 行を加える。`Issues:` セクションは PASS かつ起票が 1 件以上発生したときだけ加える。
+
+   ```
+   Trinity result: <PASS | NEEDS_REVISION at iter <n> | FAIL at iter <n>>
+   RunDir:  <RUN_DIR>
+   Branch:  <BRANCH> (base: <BASE_BRANCH>)
+   Plan:    <RUN_DIR>/plan.md
+   Commit:  <最後のコミットSHA>
+   Eval:    <RUN_DIR>/eval-<n>.md
+   Iters:   <n>/<MAX_ITER>
+   PR:      #<PR_NUMBER> <PR_URL>                                   # PASS のときのみ
+   Merge:   <merged | closed | needs-revision | failed: <理由>>      # PASS のときのみ
+   Cleanup: <done | skipped | partial: <残っている操作>>              # PASS のときのみ
+   Followup: <FOLLOWUP_REQUIREMENT>                                  # needs-revision のときのみ
+   Issues:                                                 # PASS かつ起票が1件以上発生したときのみ
+     <ユーザープロジェクト向け issue URL 1>     # post-run-issue-suggestions の起票結果
+     <ユーザープロジェクト向け issue URL 2>
+     ...
+     <trinity プラグイン向け issue URL 1>     # post-run-trinity-self-issue-suggestions の起票結果
+     <trinity プラグイン向け issue URL 2>
+     ...
+   ```
+
+   `Issues:` セクションは「ユーザープロジェクト向け」（`post-run-issue-suggestions` 段の起票結果）と「trinity プラグイン向け」（`post-run-trinity-self-issue-suggestions` 段の起票結果）の 2 連続ブロックとして並列に出力する。各ブロックはそれぞれ 1 件以上起票されたときだけ出す。両方とも 0 件の場合は `Issues:` セクション自体を出さない。
+
+   NEEDS_REVISION / FAIL のまま `MAX_ITER` に到達した場合は `PR:` `Merge:` `Cleanup:` `Issues:` 行を出さない。
+
+`/trinity:run` の起動自体がパイプライン全体への明示的な許可（push と PR 作成、起票候補ヒアリングを含む）だが、マージとクリーンアップだけは PR 作成後に `git-merge` スキルが呼ぶ `AskUserQuestion` で改めてユーザーの承認を取る。途中で他の確認プロンプトは挟まない。
+
+## Generator チャンク分割の契約
 
 Generator フェーズはチャンク分割で複数回 `trinity:generator` サブエージェントを順次起動する。各チャンクが独立な Claude CLI ターン予算を持つことで、出力上限超過を回避する。
 
-#### チャンク列の決定（plan.md のパース）
+### チャンク列の決定（plan.md のパース）
 
 Planner が書き出した `${RUN_DIR}/plan.md` の `## 影響範囲` セクションを次の手順で決定的にパースし、チャンク列を組み立てる。
 
@@ -81,7 +218,7 @@ CHUNK_TOTAL=$(awk '/^## 影響範囲/{in_sec=1} in_sec && /^### チャンク [0-
 
 > **Planner への注記**: Planner は `## 影響範囲` 配下に `### チャンク N: <タイトル>` サブセクションを任意で書くことで、Orchestrator のチャンク分割動作を制御できる。`agents/planner.md` 本体は変更しない。
 
-#### チャンクごとの順次起動
+### チャンクごとの順次起動
 
 チャンク総数 `M` を決定したら、`i = 1..M` の順で `trinity:generator` サブエージェントを**順次**起動する（並列起動はしない）。
 
@@ -97,7 +234,7 @@ CHUNK_TOTAL=$(awk '/^## 影響範囲/{in_sec=1} in_sec && /^### チャンク [0-
 
 各チャンクは `${RUN_DIR}/gen-<n>-chunk-<i>.md` にレポートを書き、その絶対パスを返す。Orchestrator はそのパスを保持する。
 
-#### 停止条件
+### 停止条件
 
 あるチャンク `i` で Generator が「検証失敗 → 自力修正不能 → コミット未作成」となった場合、後続チャンク（`i+1..M`）を起動せず Orchestrator はループを停止し、ユーザーに次の情報を報告する。
 
@@ -107,7 +244,7 @@ CHUNK_TOTAL=$(awk '/^## 影響範囲/{in_sec=1} in_sec && /^### チャンク [0-
 
 存在しないコミットを Evaluator に渡してはいけない。
 
-#### Evaluator への引き渡し
+### Evaluator への引き渡し
 
 全チャンク成功時、Orchestrator は次のコマンドでイテレーション内最終コミット SHA を取得する。
 
@@ -117,84 +254,14 @@ LAST_SHA=$(git -C "$WORKTREE_DIR" rev-parse HEAD)
 
 Evaluator にはこの 1 つの SHA と `ChunkTotal: <M>` を渡す。Evaluator 側で `ChunkTotal > 1` のときに `git -C "${WORKTREE_DIR}" log --oneline -n <ChunkTotal>` で中間コミットを遡る契約になっているため、各チャンクの中間コミット SHA を個別に渡す必要はない。
 
-### Evaluator
-
-`trinity:evaluator` サブエージェントを次の入力で起動する。
-
-- `RUN_DIR: <絶対パス>`
-- `WORKTREE_DIR: <絶対パス>`
-- `Iteration: <n>`
-- コミットSHA（イテレーション内最終コミット。`ChunkTotal > 1` のとき Evaluator が `git log -n <ChunkTotal>` で中間コミットを遡る）
-- `ChunkTotal: <M>`
-- Generatorの検証レポート（最終チャンクのレポートパス `${RUN_DIR}/gen-<n>-chunk-<M>.md`）
-
-返却された評価レポートのパス（必ず `${RUN_DIR}/eval-<n>.md`）と判定（PASS / NEEDS_REVISION / FAIL）を保持する。
-
-### 分岐
-
-PASS の場合はループを抜けて「最終化」セクションに進む。
-
-NEEDS_REVISION で `n < MAX_ITER` の場合はループを継続する。Plannerは次の周回で評価レポートを受け取り、計画ファイルを新規作成せず上書きする。
-
-FAIL の場合も同じく次の周回に進む。Plannerはより踏み込んだ再計画を行う。
-
-`n == MAX_ITER` で PASS になっていない場合は最終化をスキップし、最新の評価レポートのパスと未解決の指摘を表示して停止する。終了行をログに書く。
-
-```shell
-printf '=== %s run ended: %s at iter %d/%d ===\n' "${TS}-${SLUG}" "${VERDICT}" "$n" "$MAX_ITER" >> .trinity/trinity.log
-```
-
-## 最終化（PASS のときだけ）
-
-PASS で抜けたら次を順に行う。
-
-1. ログに完了行を書く。
-
-```shell
-printf '=== %s run ended: PASS at iter %d ===\n' "${TS}-${SLUG}" "$n" >> .trinity/trinity.log
-```
-
-2. worktree のブランチを origin に push する。失敗はネットワーク要因のときのみ最大4回 exponential backoff で再試行する（2s, 4s, 8s, 16s）。それ以外の失敗（権限・ブランチ保護など）はそのまま停止してユーザーに報告する。
-
-```shell
-git -C "$WORKTREE_DIR" push -u origin "$BRANCH"
-```
-
-3. PR を作成する。`/trinity:run` の起動自体がパイプライン全体（PR作成を含む）への明示的な許可なので、ユーザー確認は取らずに進める。
-
-PR の作成には GitHub MCP ツールを使う。スキーマが未ロードなら最初に `ToolSearch query="select:mcp__github__create_pull_request"` で読み込む。リポジトリ owner/repo は `git -C "$WORKTREE_DIR" remote get-url origin` から取り出す。
-
-PR のタイトルは `${RUN_DIR}/plan.md` の先頭 H1 をそのまま使う。70 文字を超えるなら冒頭で切り詰める。
-
-PR の本文は次の形にする。`.trinity/` は gitignore されておりレビュアーから見えないため、計画と判定の核心は本文に埋め込む。
-
-```
-## 概要
-<plan.md の "目的" セクション本文をそのまま貼る>
-
-## 受け入れ基準
-<plan.md の "受け入れ基準" セクションを箇条書きでそのまま貼る>
-
-## Trinity 実行サマリ
-- Run: <RUN_DIR を repo ルートからの相対パスで>
-- Iterations: <n>/<MAX_ITER>
-- Final verdict: PASS
-- Final commit: <短縮SHA>
-
-## 判定根拠（最終 Evaluator レポートからの抜粋）
-<eval-<n>.md の "判定" セクションをそのまま貼る>
-```
-
-base は `$BASE_BRANCH`、head は `$BRANCH` とする。
-
 ## PASS後の起票候補ヒアリング（post-run-issue-suggestions）
 
 ### 起動条件
 
-本段は PASS で `gh pr create`（または GitHub MCP `create_pull_request`）が成功したあと、ユーザーへの最終出力（`Trinity result:` ブロック印字）の直前に実施する。
+本段は PASS で `git-pull-request` スキル経由の PR 作成（実行手順 4b）が成功したあと、ステップ 4e と 6/7 の前に実施する（実行手順 4d）。
 
 - `NEEDS_REVISION` / `FAIL` で `max_iter` に達した経路では本段を実施せずスキップする。
-- 候補が 0 件のときは `AskUserQuestion` を呼ばず、最終出力の `Issues:` 行も出さない（または「起票候補なし」旨を1行入れるだけにとどめる）。
+- 候補が 0 件のときは `AskUserQuestion` を呼ばず、最終出力の `Issues:` 行も出さない。
 
 本段はオーケストレーター（`commands/run.md`）の責務であり、サブエージェント（Planner / Generator / Evaluator）には委譲しない。サブエージェント定義（`agents/*.md`）は変更しない。
 
@@ -256,17 +323,17 @@ git -C "$WORKTREE_DIR" remote get-url origin
 
 ### 起票結果
 
-起票が1件以上発生したとき、最終出力の `PR:` 行の直下に `Issues:` セクションとして各 issue URL を1行ずつ列挙する（後述「ユーザーへの出力」参照）。
+起票が1件以上発生したとき、最終出力（実行手順 7）の `Issues:` セクションに各 issue URL を1行ずつ列挙する。
 
 ## PASS後 trinity プラグイン自身バグ・要望ヒアリング（post-run-trinity-self-issue-suggestions）
 
 ### 位置
 
-本段は前段 `post-run-issue-suggestions` が終わった直後・`## ユーザーへの出力` の直前に実施する。前段とは別段として共存し、前段が存在しなくても本段は単体で成立する。
+本段は前段 `post-run-issue-suggestions`（実行手順 4d）が終わった直後・実行手順 6/7（ログ・最終出力）の直前に実施する（実行手順 4e）。前段とは別段として共存し、前段が存在しなくても本段は単体で成立する。
 
 ### 起動条件
 
-PASS で `gh pr create`（または GitHub MCP `create_pull_request`）が成功した最終化経路でのみ実施する。
+PASS で `git-pull-request` スキル経由の PR 作成が成功した最終化経路でのみ実施する。
 
 - `NEEDS_REVISION` / `FAIL` で `max_iter` に達した経路では本段を実施せずスキップする。
 - 候補が 0 件のときは `AskUserQuestion` を呼ばず、起票結果出力も出さない。
@@ -306,7 +373,7 @@ trinity プラグイン本体に起因する例:
 
 1 問あたり最大 4 オプション、1 コールあたり最大 4 問。各オプションのラベル＝タイトル候補、description＝本文候補の短い要約。「Other」は `AskUserQuestion` が自動付与するためテンプレートに含めない。
 
-本段の `AskUserQuestion` への参加そのものが、issue 起票と続く PR 作成への承認 touchpoint である。追加の PR 作成 Yes/No 確認は挟まない（「選択 = そのまま PR 作成へ進む」と読める）。
+本段の `AskUserQuestion` への参加そのものが、issue 起票への承認 touchpoint である。追加の Yes/No 確認は挟まない（「選択 = そのまま起票」と読める）。
 
 ### 同意 = 即起票
 
@@ -326,40 +393,4 @@ gh issue create --repo yjn279/trinity --title "<title>" --body "<body>"
 
 ### 起票結果
 
-起票が 1 件以上発生したとき、最終出力の `Issues:` セクション内に「trinity プラグイン向け」の連続ブロックとして各 issue URL を 1 行ずつ列挙する（後述「ユーザーへの出力」参照）。前段 `post-run-issue-suggestions` の起票結果（ユーザープロジェクト向け）と並列に並ぶ。
-
-## ユーザーへの出力
-
-ループ終了時に次の形式でちょうど印字する。最終化を実施した場合は最後に PR 行を加える。
-
-```shell
-Trinity result: <PASS | NEEDS_REVISION at iter <n> | FAIL at iter <n>>
-RunDir:  <RUN_DIR>
-Branch:  <BRANCH> (base: <BASE_BRANCH>)
-Plan:    <RUN_DIR>/plan.md
-Commit:  <最後のコミットSHA>
-Eval:    <RUN_DIR>/eval-<n>.md
-Iters:   <n>/<MAX_ITER>
-PR:      <PR URL>            # PASS のときのみ
-Issues:                      # PASS かつ起票が1件以上発生したときのみ
-  <ユーザープロジェクト向け issue URL 1>     # post-run-issue-suggestions の起票結果
-  <ユーザープロジェクト向け issue URL 2>
-  ...
-  <trinity プラグイン向け issue URL 1>     # post-run-trinity-self-issue-suggestions の起票結果
-  <trinity プラグイン向け issue URL 2>
-  ...
-```
-
-`Issues:` セクションは「ユーザープロジェクト向け」（`post-run-issue-suggestions` 段の起票結果）と「trinity プラグイン向け」（`post-run-trinity-self-issue-suggestions` 段の起票結果）の 2 連続ブロックとして並列に出力する。各ブロックはそれぞれ 1 件以上起票されたときだけ出す。両方とも 0 件の場合は `Issues:` セクション自体を出さない。
-
-その後に2〜3文の平易な要約を添える。それ以上は書かない。
-
-## オーケストレーター（あなた）への制約
-
-サブエージェントは並列ではなく直列に呼び出す。各段は前段の出力に依存するためである。Generator の同一イテレーション内チャンクも同様に直列で起動する。
-
-段と段のあいだで、コードを自分で読んだり編集したりしない。受け渡しは `RUN_DIR` `WORKTREE_DIR` `BRANCH` のパスとコミットSHAだけにする。各エージェントが成果物（ファイル）から動くという原則がハーネスの本質である。
-
-エージェントの出力を要約して次のエージェントに渡さない。`RUN_DIR` を渡し、次のエージェントに自分で読ませる。Evaluatorに必要な独立性はこれで担保される。
-
-worktree の後始末は行わない。`.trinity/` は gitignore されており、worktree は監査ログとして残す。ユーザーが不要と判断したときに `git worktree remove` する。
+起票が 1 件以上発生したとき、最終出力（実行手順 7）の `Issues:` セクション内に「trinity プラグイン向け」の連続ブロックとして各 issue URL を 1 行ずつ列挙する。前段 `post-run-issue-suggestions` の起票結果（ユーザープロジェクト向け）と並列に並ぶ。

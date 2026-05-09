@@ -4,8 +4,20 @@
     "allow": [
       "Bash(git worktree:*)",
       "Bash(git -C *:*)",
+      "Bash(git update-ref -d *:*)",
       "Bash(mkdir -p:*)",
-      "Bash(cat .trinity/*)"
+      "Bash(cat .trinity/*)",
+      "Bash(git push:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr close:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh pr list *:*)",
+      "Bash(gh api -X DELETE *:*)",
+      "Bash(rm -rf .trinity/*)",
+      "Bash(rm -rf *:*)"
     ]
   }
 }
