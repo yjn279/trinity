@@ -106,7 +106,13 @@ gh pr create \
 
 既定モードのステップ 1 と同じ手順で `WORKTREE_DIR` と `BRANCH` を確定する。`BRANCH` が `trinity/` で始まらない点を考慮し、worktree 一覧から現在アクティブな非メイン worktree をブランチ prefix に依存せずに選択する。
 
-### 2. リモートへの追加 push が fast-forward であることを確認する
+### 2. リモート同名ブランチ確認ステップは実施しない
+
+既定モードのステップ 3（`git ls-remote --heads origin "$BRANCH"` でリモート同名ブランチが存在する場合に push を中断する）は、PR continuation モードでは実施しない。
+
+理由: 既存 PR に紐づくブランチはリモートに必ず存在する（PR 自体がリモートブランチを前提として成立している）。このため、リモート同名ブランチの存在を理由とした中断は「既存 PR への追加 push」という意図的な操作を誤って防ぐことになり、不要なチェックとなる。衝突の検出は後続のステップ 3（fast-forward チェック）で代替する。
+
+### 3. リモートへの追加 push が fast-forward であることを確認する
 
 push の前に、ローカルの `BRANCH` がリモートの `origin/<BRANCH>` より先にある（fast-forward な関係）かを確認する。
 
@@ -119,7 +125,7 @@ git -C "$WORKTREE_DIR" log --oneline "origin/${BRANCH}..HEAD"
 - **リモートがローカルより進んでいる、または diverged（fast-forward でない）**: push を中断し、ユーザーに次のメッセージを通知して停止する。force push は行わない。
   > `origin/<branch>` がローカルより先に進んでいます（または diverged）。fast-forward でない push は行いません。`git pull --rebase` 等でローカルを最新化してから再度実行してください。
 
-### 3. 追加 push する（ネットワーク要因の再試行付き）
+### 4. 追加 push する（ネットワーク要因の再試行付き）
 
 ```shell
 git -C "$WORKTREE_DIR" push origin "$BRANCH"
@@ -127,7 +133,7 @@ git -C "$WORKTREE_DIR" push origin "$BRANCH"
 
 既定モードとは異なり、`-u` フラグは省略可（上流追跡は既存 PR の段階で設定済みのため）。失敗がネットワーク要因のときのみ、最大 4 回 exponential backoff で再試行する。ネットワーク以外の原因による失敗はそのまま停止してユーザーに報告する。
 
-### 4. 新規 PR は作成しない
+### 5. 新規 PR は作成しない
 
 PR continuation モードでは `gh pr create` を呼ばない。`PR_URL` は呼び出し側から渡された `EXISTING_PR_URL` をそのまま返す。
 
@@ -149,4 +155,4 @@ PR continuation モードでは `gh pr create` を呼ばない。`PR_URL` は呼
 | 項目 | 内容 |
 | --- | --- |
 | PR URL | 既定モード: 作成された PR の URL。PR continuation モード: 渡された既存 PR URL をそのまま返す。 |
-| push 結果 | push 成功 / 失敗 / 中断（fast-forward でない、またはリモート同名ブランチ存在） |
+| push 結果 | push 成功 / 失敗 / 中断（既定モード: リモート同名ブランチ存在。PR continuation モード: fast-forward でない） |
