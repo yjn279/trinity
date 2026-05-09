@@ -7,9 +7,17 @@
       "Bash(git update-ref -d *:*)",
       "Bash(mkdir -p:*)",
       "Bash(cat .trinity/*)",
-      "Bash(rm -rf *:*)",
+      "Bash(git push:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr close:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh pr list *:*)",
       "Bash(gh api -X DELETE *:*)",
-      "Bash(gh pr list *:*)"
+      "Bash(rm -rf .trinity/*)",
+      "Bash(rm -rf *:*)"
     ]
   }
 }

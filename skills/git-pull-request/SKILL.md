@@ -1,151 +1,97 @@
 ---
 name: git-pull-request
-description: worktree 上のブランチを origin に push し、続けて同一スキル内で Pull Request を作成する。push 前の既存ブランチ確認、ネットワーク障害に対する指数バックオフ再試行、恒久失敗の即停止、push 成功直後の PR 作成、`PR_NUMBER` / `PR_URL` の返却を規定する。PR タイトル / 本文 / owner / repo の取り出しもスキル内で完結させる。
+description: "Generator がコミットを積んだ worktree のブランチを origin に push し、PR を作成する。push が既存リモートブランチを上書きしないことを保証する。"
+when-to-use: "worktree ブランチの push と PR 作成が必要なときに使う。呼び出し側から渡すのは PR タイトルと PR 本文のみ。"
+tools: Bash
 ---
 
-# git-pull-request
+# 役割
 
-ブランチを origin に push し、push 成功直後に PR を作成する。push と PR 作成は一連の作業フローとして 1 スキルで完結させる。PR タイトル / 本文 / `OWNER` / `REPO` は呼び出し側から受け取らない。スキル内で組み立てる。
+worktree のブランチを `origin` に push し、Pull Request を作成するスキルである。push の衝突防止を含み、worktree パスとベースブランチはスキル内部で推測する。呼び出し側から渡すのは PR タイトルと PR 本文のみで、Trinity 固有の情報（plan / eval / run meta）はスキル仕様に含まない。
 
-## 入力契約
+# 受け取る入力
 
-呼び出し側から次を受け取る。`PR_TITLE` / `PR_BODY` / `OWNER` / `REPO` は呼び出し側から受け取らない。これらはすべてスキル内で組み立てる。
+- **PR タイトル**（文字列）
+- **PR 本文**（文字列）
 
-- `WORKTREE_DIR` — push 元の worktree の絶対パス
-- `BRANCH` — push 対象のブランチ名
-- `BASE_BRANCH` — PR の base ブランチ
-- `PLAN_PATH` — `plan.md` の絶対パス（PR タイトル / 本文を組み立てるため）
-- `EVAL_PATH` — 最終 Evaluator レポートの絶対パス（同上）
-- `RUN_META` — 任意の小さなメタ情報（イテレーション番号、最終コミット SHA、`RUN_DIR` のリポジトリルートからの相対表記）
+これ以外のパラメータ（worktree パス、ブランチ名、ベースブランチ名、リポジトリ情報など）は呼び出し側から受け取らない。
 
-## push 前の既存ブランチ確認
+PR 本文の組み立て（plan.md の目的・受け入れ基準の引用、eval レポートの判定セクションの引用など）は呼び出し側の責任で行い、完成した文字列としてこのスキルに渡す。
 
-push を実行する**前に**、同名のリモートブランチが既に存在しないことを確認する。
+# スキル内で推測する項目
 
-```shell
-git -C "$WORKTREE_DIR" ls-remote --heads origin "$BRANCH"
-```
-
-このコマンドが 1 行以上を出力した場合、同名のリモートブランチが存在する。**push せず即停止**し、次の情報を呼び出し側に返す。
-
-- 競合しているブランチ名
-- 既存 PR の有無（`gh pr list --head "$BRANCH" --repo <owner>/<repo>` の結果）
-- 原因として考えられる経路（同 slug の再実行、suffix 競合の取りこぼしなど）
-
-コマンドが 0 行（存在しない）を返した場合のみ push に進む。
-
-## push
-
-```shell
-git -C "$WORKTREE_DIR" push -u origin "$BRANCH"
-```
-
-### 再試行する失敗
-
-次のいずれかが stderr に現れた場合のみ再試行する。
-
-- `Could not resolve host`
-- `Connection timed out` / `Connection refused`
-- `Operation timed out`
-- `error: RPC failed`（HTTP 5xx 系を含む）
-- `fatal: unable to access` の中で 503 / 504 / network 系メッセージを含むもの
-- `gnutls_handshake() failed` などの一時的な TLS エラー
-
-最大 4 回まで再試行し、合計で最大 5 回試行する。
-
-| 失敗回 | 次の試行までの待機 |
+| 項目 | 推測方法 |
 | --- | --- |
-| 1 回目失敗 | 2 秒 |
-| 2 回目失敗 | 4 秒 |
-| 3 回目失敗 | 8 秒 |
-| 4 回目失敗 | 16 秒 |
-| 5 回目失敗 | 停止して報告 |
+| worktree パス | `git worktree list --porcelain` から現在の作業ブランチに紐づく非メイン worktree を選択する |
+| ブランチ名 | 上記 worktree の `branch` フィールド（HEAD ref） |
+| ベースブランチ | `git merge-base --fork-point <known-base> HEAD` または reflog から、worktree のブランチが分岐した親ブランチを推測する。複数候補になる場合のみユーザーに選択肢を提示する |
+| リモート owner/repo | `git -C "$WORKTREE_DIR" remote get-url origin` からパースする |
 
-### 即停止する失敗
+# ワークフロー
 
-次は再試行せず、即座に停止して呼び出し側に報告する。
+1. **worktree と作業ブランチを特定する**
 
-- `Permission denied` / `403`
-- `protected branch` / `branch protection`
-- `pre-receive hook declined`
-- `non-fast-forward`（ローカルが古い）
-- `does not appear to be a git repository`
-- `remote rejected`
-- 認証情報の不足（`Authentication failed` など）
+   `git worktree list --porcelain` の出力を解析し、現在進行中の作業が含まれる非メイン worktree（`branch: refs/heads/trinity/` で始まるもの）を選択する。
 
-stderr の原文を最低 5 行そのまま見せ、何が起きたか・どこを見るべきかを 2〜3 文で添える。
+   ```shell
+   git worktree list --porcelain
+   ```
 
-エラー文字列の判定は完全一致ではなく substring マッチで行う（`grep -i` 相当）。恒久的失敗を示すメッセージが 1 つでもあれば即停止に倒す。迷ったら**停止側に倒す**。
+   `WORKTREE_DIR` と `BRANCH` を確定する。
 
-### やってはいけないこと（push）
+2. **ベースブランチを推測する**
 
-- push 前の既存ブランチ確認を省略しない
-- `--force` / `--force-with-lease` を使わない（新規ブランチへの push のみで上書きは不要）
-- `--no-verify` で hooks をスキップしない
-- 再試行回数を変えない（2/4/8/16 秒・最大 4 回再試行・合計 5 回で固定）
+   ```shell
+   git -C "$WORKTREE_DIR" log --oneline --decorate | head -20
+   git -C "$WORKTREE_DIR" for-each-ref --format='%(refname:short)' refs/heads/ | grep -v "^trinity/"
+   ```
 
-## PR 作成
+   reflog とブランチ一覧から、このブランチが切り出された元ブランチ（通常 `main` または `master`）を推測する。候補が一意に決まらない場合のみユーザーに確認する。
 
-push 成功直後に同一スキル内で PR を作成する。
+3. **リモート同名ブランチの存在を確認する（push 上書き防止）**
 
-### owner / repo の取り出し
+   push の前に `git ls-remote --heads origin <branch>` でリモート同名ブランチの存在を確認する。
 
-```shell
-git -C "$WORKTREE_DIR" remote get-url origin
-```
+   ```shell
+   git -C "$WORKTREE_DIR" ls-remote --heads origin "$BRANCH"
+   ```
 
-`https://github.com/<owner>/<repo>.git` または `git@github.com:<owner>/<repo>.git` のどちらにも対応する。末尾の `.git` は剥がす。
+   - **リモートにブランチが存在しない場合**: 通常通り push を進める。
+   - **リモートにブランチが存在する場合**: push を中断し、ユーザーに次のメッセージを通知して停止する。
+     > `origin/<branch>` がすでに存在します。上書き push は行いません。リモートブランチを手動で確認・削除した後、再度実行してください。
 
-### PR タイトルの組み立て
+   ブランチ命名に秒精度のタイムスタンプが含まれる場合でも、命名規約に頼らずこのチェックを必ず実施する。
 
-`PLAN_PATH` の先頭 H1 本文を取り出す。70 文字超なら冒頭 70 文字で切り詰める。H1 が無ければ `BRANCH` 名をフォールバックとして使う。
+4. **push する（ネットワーク要因の再試行付き）**
 
-### PR 本文の組み立て
+   ```shell
+   git -C "$WORKTREE_DIR" push -u origin "$BRANCH"
+   ```
 
-次のテンプレで組み立てる。
+   失敗がネットワーク要因（exit code による判定）のときのみ、最大 4 回 exponential backoff で再試行する（2s、4s、8s、16s）。権限エラー・ブランチ保護など、ネットワーク以外の原因による失敗はそのまま停止してユーザーに報告する。
 
-```markdown
-## 概要
-<PLAN_PATH の `## 背景` セクション本文>
+5. **PR を作成する**
 
-## ゴール
-<PLAN_PATH の `## ゴール` セクション>
+   リモート URL から owner/repo を取得し、`gh pr create` で PR を作成する。
 
-## 受け入れ基準
-<PLAN_PATH の `## 受け入れ基準（Evaluator用チェックリスト）` セクション>
+   ```shell
+   gh pr create \
+     --title "$PR_TITLE" \
+     --body "$PR_BODY" \
+     --base "$BASE_BRANCH" \
+     --head "$BRANCH"
+   ```
 
-## Trinity 実行サマリ
-<RUN_META の内容>
+   `gh` が利用できない環境では `mcp__github__create_pull_request` ツールで代替する。
 
-## 判定根拠（最終 Evaluator レポートからの抜粋）
-<EVAL_PATH の `## 軸別スコア` セクション>
-```
+# 副作用
 
-該当セクションが無い場合はその節を省く（空 H2 を残さない）。`## 軸別スコア` が無ければ `## 受け入れ基準` 節を代用する。
+- `git push -u origin <branch>` を実行し、リモートにブランチを作成する。
+- `gh pr create` または `mcp__github__create_pull_request` で PR を作成する。
 
-### PR の作成
+# 出力
 
-`mcp__github__create_pull_request` を使う。スキーマが未ロードなら呼ぶ前に読み込む。
-
-```
-ToolSearch query="select:mcp__github__create_pull_request"
-```
-
-- `owner` / `repo` — 上で取り出した値
-- `title` — 上で組み立てた PR タイトル
-- `body` — 上で組み立てた PR 本文
-- `base` — `BASE_BRANCH`
-- `head` — `BRANCH`
-
-### 戻り値
-
-PR 作成レスポンスから次の 2 値を取り出して呼び出し側へ返す。
-
-- `PR_NUMBER` — マージ確認と `mcp__github__merge_pull_request` 呼び出しに使う
-- `PR_URL` — 最終出力と否認時のユーザーへの提示に使う
-
-### やってはいけないこと（PR）
-
-- PR タイトル / 本文 / `OWNER` / `REPO` を呼び出し側から受け取らない（スキル内の責務）
-- PR の base を `BRANCH` 自身や固定値にしない（必ず `$BASE_BRANCH` を使う）
-- push が失敗しているのに PR 作成に進まない
+| 項目 | 内容 |
+| --- | --- |
+| PR URL | 作成された PR の URL |
+| push 結果 | push 成功 / 失敗 / 中断（リモート同名ブランチ存在） |

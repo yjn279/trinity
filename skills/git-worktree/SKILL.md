@@ -1,90 +1,88 @@
 ---
 name: git-worktree
-description: 既存ブランチから派生した新規ブランチを隔離 git worktree として展開する。呼び出し側から要件文（または slug ヒント）・base ref・リポジトリルートを受け取り、タイムスタンプ・slug・ブランチ名・RUN_DIR・WORKTREE_PATH をスキル内で組み立てて `git worktree add` で安全にセットアップする。worktree の上書き防止、絶対パス強制、隔離原則を規定する。
+description: "現在の clean なブランチを base として新しいブランチを切り、隔離 worktree を作成する。タイムスタンプ付きの run ディレクトリと trinity.log への開始行追記まで行う。"
+when-to-use: "隔離された git worktree が必要なときに使う。呼び出し側から渡すのはスラッグ（kebab-case 2〜5 語）のみ。"
+tools: Bash
 ---
 
-# git-worktree
+# 役割
 
-要件文から slug とタイムスタンプを組み立て、ブランチを隔離 worktree として展開する。組み立てロジックはすべてスキル内で完結する。呼び出し側は最小限の情報を渡すだけでよい。
+隔離 worktree を作成するスキルである。呼び出し側から受けるのはスラッグのみで、リポジトリパス・ログファイルパス・ベースブランチはすべてスキル内部で推測する。タイムスタンプとログ追記まで行い、後続の処理に必要なパスとブランチ名を返す。
 
-## 入力契約
+# 受け取る入力
 
-呼び出し側から次を受け取る。`SLUG` / `TS` / `BRANCH_NAME` / `WORKTREE_PATH` / `RUN_DIR` は呼び出し側から受け取らない。これらはすべてスキル内で組み立てる。
+- **スラッグ**（kebab-case 2〜5 語、要件から派生）。例: `add-theme-toggle`
 
-- `REQUIREMENT` または `SLUG_HINT` — slug 生成のための要件文（または既に組み立てた slug ヒント）
-- `BASE_REF` — worktree が派生するブランチ / コミット
-- `REPO_ROOT` — slug 衝突確認用に、起動側リポジトリの絶対パス
-- `LOG_PATH`（任意） — 開始行を追記するログファイルの絶対パス
+これ以外のパラメータ（リポジトリパス、ログファイルパス、ベースブランチ名など）は呼び出し側から受け取らない。
 
-## スキル内での変数組み立て
+# スキル内で推測する項目
 
-呼び出し側から受け取った情報をもとに、次を組み立てる。
+| 項目 | 推測方法 |
+| --- | --- |
+| リポジトリルート | `git rev-parse --show-toplevel` |
+| `BASE_BRANCH` | `git rev-parse --abbrev-ref HEAD`（現在のブランチ） |
+| タイムスタンプ | `date -u +%Y%m%dT%H%M%SZ` |
+| ログファイルパス | `<リポジトリルート>/.trinity/trinity.log` |
+| タイムスタンプ衝突時 | スラッグ末尾に `-2` `-3` … を付けて一意化する |
 
-```shell
-TS=$(date -u +%Y%m%dT%H%M%SZ)
-SLUG=<REQUIREMENT から英字 kebab-case 2〜5 語、ASCII のみ、「動詞 + 目的語」形が望ましい>
-RUN_DIR="${REPO_ROOT}/.trinity/${TS}-${SLUG}"
-WORKTREE_PATH="${RUN_DIR}/worktree"
-BRANCH_NAME="trinity/${TS}-${SLUG}"
-```
+# ワークフロー
 
-`SLUG` は `SLUG_HINT` が渡された場合はそれをそのまま使う。`REQUIREMENT` が渡された場合は要件文から英字 kebab-case の 2〜5 語を抽出する（例: `add-theme-toggle`）。
+1. **リポジトリルートと BASE_BRANCH を取得する**
 
-### slug 衝突処理
+   ```shell
+   REPO_ROOT=$(git rev-parse --show-toplevel)
+   BASE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+   ```
 
-組み立てた `RUN_DIR` と同名のディレクトリが既に `REPO_ROOT/.trinity/` に存在する場合、末尾に `-2` `-3` ... を付けて衝突しないものを採用する。
+2. **タイムスタンプと run ディレクトリ名を決定する**
 
-```shell
-# 衝突確認の例
-if [ -d "$RUN_DIR" ]; then
-  i=2
-  while [ -d "${REPO_ROOT}/.trinity/${TS}-${SLUG}-${i}" ]; do
-    i=$((i + 1))
-  done
-  SLUG="${SLUG}-${i}"
-  RUN_DIR="${REPO_ROOT}/.trinity/${TS}-${SLUG}"
-  WORKTREE_PATH="${RUN_DIR}/worktree"
-  BRANCH_NAME="trinity/${TS}-${SLUG}"
-fi
-```
+   ```shell
+   TS=$(date -u +%Y%m%dT%H%M%SZ)
+   SLUG=<呼び出し側から受け取った kebab-case スラッグ>
+   RUN_NAME="${TS}-${SLUG}"
+   ```
 
-## セットアップ手順
+   同一タイムスタンプで衝突（`${REPO_ROOT}/.trinity/${RUN_NAME}` がすでに存在する）した場合は `SLUG` 末尾に `-2` `-3` を付けて一意化する。
 
-```shell
-mkdir -p "$RUN_DIR"
-git -C "$REPO_ROOT" worktree add -b "$BRANCH_NAME" "$WORKTREE_PATH" "$BASE_REF"
-```
+3. **パスとブランチ名を確定する**
 
-`WORKTREE_PATH` はスキル内で組み立てた絶対パスをそのまま使う。`pwd` を混ぜない。
+   ```shell
+   RUN_DIR="${REPO_ROOT}/.trinity/${RUN_NAME}"
+   WORKTREE_DIR="${RUN_DIR}/worktree"
+   BRANCH="trinity/${RUN_NAME}"
+   LOG_FILE="${REPO_ROOT}/.trinity/trinity.log"
+   ```
 
-`LOG_PATH` が渡された場合のみ、次の形式で開始行を追記する。
+4. **run ディレクトリを作成し、worktree をチェックアウトする**
 
-```shell
-printf '=== %s started (branch=%s, base=%s) ===\n' \
-  "$(basename "$WORKTREE_PATH")" "$BRANCH_NAME" "$BASE_REF" >> "$LOG_PATH"
-```
+   ```shell
+   mkdir -p "${RUN_DIR}"
+   git worktree add -b "${BRANCH}" "${WORKTREE_DIR}" "${BASE_BRANCH}"
+   ```
 
-`LOG_PATH` が渡されなければログ追記を行わない。
+5. **trinity.log に開始行を追記する**
 
-## 前提確認
+   `LOG_FILE` が存在しない場合は作成してから追記する。
 
-- `WORKTREE_PATH` が既存ディレクトリであれば展開せずに停止し、衝突処理の再実行を促す
-- `BASE_REF` が有効なブランチ / コミットかどうかは `git -C "$REPO_ROOT" rev-parse --verify "$BASE_REF"` で確認する
+   ```shell
+   mkdir -p "${REPO_ROOT}/.trinity"
+   printf '=== %s run started on %s (base=%s) ===\n' \
+     "${RUN_NAME}" "${BRANCH}" "${BASE_BRANCH}" >> "${LOG_FILE}"
+   ```
 
-## 戻り値
+# 副作用
 
-次の値を呼び出し側へ返す。
+- `${RUN_DIR}/` ディレクトリを新規作成する。
+- `git worktree add` で `${WORKTREE_DIR}/` に新ブランチをチェックアウトする。
+- `${LOG_FILE}` に開始行を 1 行追記する。
 
-- `TS` — 組み立てたタイムスタンプ
-- `SLUG` — 確定した slug（衝突回避済み）
-- `BRANCH_NAME` — `trinity/<TS>-<SLUG>` 形式のブランチ名
-- `RUN_DIR` — `<REPO_ROOT>/.trinity/<TS>-<SLUG>` の絶対パス
-- `WORKTREE_PATH` — `<RUN_DIR>/worktree` の絶対パス
+# 出力
 
-## やってはいけないこと
+後続の処理のために次の値を返す。
 
-- `cd` してから `git worktree add` を打たない（必ず `git -C "$REPO_ROOT"` か絶対パスで操作する）
-- `WORKTREE_PATH` が既存の場合に上書きしない（衝突処理を経て新しい suffix を付ける）
-- `BASE_REF` 上に直接 worktree を作らない（`BRANCH_NAME` を新規作成して隔離する）
-- 相対パスを混ぜない（Bash 呼び出し間で cwd が引き継がれないため必ず絶対パスを使う）
-- slug 生成やタイムスタンプの組み立てを呼び出し側に委ねない（スキル内の責務）
+| 変数 | 内容 |
+| --- | --- |
+| `RUN_DIR` | run ディレクトリの絶対パス（例: `/path/to/repo/.trinity/20260429T153000Z-add-theme-toggle`） |
+| `WORKTREE_DIR` | worktree の絶対パス（`${RUN_DIR}/worktree`） |
+| `BRANCH` | 新規ブランチ名（例: `trinity/20260429T153000Z-add-theme-toggle`） |
+| `BASE_BRANCH` | 分岐元ブランチ名（例: `main`） |
