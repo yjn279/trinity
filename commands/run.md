@@ -5,7 +5,7 @@ argument-hint: "[--max-iter=N] <1〜4文の要件>"
 
 # /trinity:run — 3エージェント・ハーネスパイプライン
 
-ハーネスを取り回すスラッシュコマンドである。Plannerが要件を計画に展開し、Generatorが隔離された worktree で実装してコミットし、Evaluatorが独立に判定する。判定が PASS になるか、`max_iter` に到達するまで繰り返す。最終 PASS 後、worktree のブランチを push して PR を作成する。
+ハーネスを取り回すスラッシュコマンドである。Plannerが要件を計画に展開し、Generatorが隔離された worktree で実装してコミットし、Evaluatorが独立に判定する。判定が PASS になるか、`max_iter` に到達するまで繰り返す。最終 PASS 後、worktree のブランチを push して PR を作成し、マージ確認まで行う。
 
 ## 引数
 
@@ -31,22 +31,13 @@ BASE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 ## run ディレクトリと worktree の作成
 
-要件からスラッグを生成し、run ディレクトリと隔離 worktree を作る。スラッグは2〜5語の英字 kebab-case にする（例: 「ユーザー設定ページにテーマトグルを追加する」→ `add-theme-toggle`）。
+要件からスラッグを生成し、`git-worktree` スキルを呼び出す。スラッグは2〜5語の英字 kebab-case にする（例: 「ユーザー設定ページにテーマトグルを追加する」→ `add-theme-toggle`）。
 
-```shell
-TS=$(date -u +%Y%m%dT%H%M%SZ)
-SLUG=<要件から生成した英字 kebab-case>
-RUN_DIR="$(pwd)/.trinity/${TS}-${SLUG}"
-WORKTREE_DIR="${RUN_DIR}/worktree"
-BRANCH="trinity/${TS}-${SLUG}"
-mkdir -p "$RUN_DIR"
-git worktree add -b "$BRANCH" "$WORKTREE_DIR" "$BASE_BRANCH"
-printf '=== %s run started on %s (base=%s) ===\n' "${TS}-${SLUG}" "${BRANCH}" "${BASE_BRANCH}" >> .trinity/trinity.log
-```
+`trinity:git-worktree` サブエージェントを次の入力で起動する。
 
-同一タイムスタンプで衝突した場合は `SLUG` の末尾に `-2` `-3` などを付ける。
+- スラッグ（要件から生成した英字 kebab-case 2〜5 語）
 
-`$RUN_DIR` と `$WORKTREE_DIR` と `$BRANCH` と `$BASE_BRANCH` を以降の全段に絶対パスで渡す。
+スキルは `RUN_DIR`、`WORKTREE_DIR`、`BRANCH`、`BASE_BRANCH` を返す。これらを以降の全段に絶対パスで渡す。
 
 ## パイプライン（n = 1 .. MAX_ITER のループ）
 
@@ -109,38 +100,45 @@ PASS で抜けたら次を順に行う。
 printf '=== %s run ended: PASS at iter %d ===\n' "${TS}-${SLUG}" "$n" >> .trinity/trinity.log
 ```
 
-2. worktree のブランチを origin に push する。失敗はネットワーク要因のときのみ最大4回 exponential backoff で再試行する（2s, 4s, 8s, 16s）。それ以外の失敗（権限・ブランチ保護など）はそのまま停止してユーザーに報告する。
+2. PR タイトルと PR 本文を組み立てる。
 
-```shell
-git -C "$WORKTREE_DIR" push -u origin "$BRANCH"
-```
+   PR のタイトルは `${RUN_DIR}/plan.md` の先頭 H1 をそのまま使う。70 文字を超えるなら冒頭で切り詰める。
 
-3. PR を作成する。`/trinity:run` の起動自体がパイプライン全体（PR作成を含む）への明示的な許可なので、ユーザー確認は取らずに進める。
+   PR の本文は次の形にする。`.trinity/` は gitignore されておりレビュアーから見えないため、計画と判定の核心は本文に埋め込む。
 
-PR の作成には GitHub MCP ツールを使う。スキーマが未ロードなら最初に `ToolSearch query="select:mcp__github__create_pull_request"` で読み込む。リポジトリ owner/repo は `git -C "$WORKTREE_DIR" remote get-url origin` から取り出す。
+   ```
+   ## 概要
+   <plan.md の "目的" セクション本文をそのまま貼る>
 
-PR のタイトルは `${RUN_DIR}/plan.md` の先頭 H1 をそのまま使う。70 文字を超えるなら冒頭で切り詰める。
+   ## 受け入れ基準
+   <plan.md の "受け入れ基準" セクションを箇条書きでそのまま貼る>
 
-PR の本文は次の形にする。`.trinity/` は gitignore されておりレビュアーから見えないため、計画と判定の核心は本文に埋め込む。
+   ## Trinity 実行サマリ
+   - Run: <RUN_DIR を repo ルートからの相対パスで>
+   - Iterations: <n>/<MAX_ITER>
+   - Final verdict: PASS
+   - Final commit: <短縮SHA>
 
-```
-## 概要
-<plan.md の "目的" セクション本文をそのまま貼る>
+   ## 判定根拠（最終 Evaluator レポートからの抜粋）
+   <eval-<n>.md の "判定" セクションをそのまま貼る>
+   ```
 
-## 受け入れ基準
-<plan.md の "受け入れ基準" セクションを箇条書きでそのまま貼る>
+3. `git-pull-request` スキルを呼び出す。
 
-## Trinity 実行サマリ
-- Run: <RUN_DIR を repo ルートからの相対パスで>
-- Iterations: <n>/<MAX_ITER>
-- Final verdict: PASS
-- Final commit: <短縮SHA>
+   `trinity:git-pull-request` サブエージェントを次の入力で起動する。
 
-## 判定根拠（最終 Evaluator レポートからの抜粋）
-<eval-<n>.md の "判定" セクションをそのまま貼る>
-```
+   - PR タイトル（上記で組み立てたもの）
+   - PR 本文（上記で組み立てたもの）
 
-base は `$BASE_BRANCH`、head は `$BRANCH` とする。
+   スキルは worktree パス・ブランチ名・ベースブランチを内部で推測し、push と PR 作成を完結する。返却された PR URL を保持する。
+
+4. `git-merge` スキルを呼び出す。
+
+   `trinity:git-merge` サブエージェントを次の入力で起動する。
+
+   - PR URL（上記で取得したもの）
+
+   スキルはマージ確認のヒアリングから後始末まで完結する。
 
 ## ユーザーへの出力
 
@@ -167,4 +165,4 @@ PR:      <PR URL>            # PASS のときのみ
 
 エージェントの出力を要約して次のエージェントに渡さない。`RUN_DIR` を渡し、次のエージェントに自分で読ませる。Evaluatorに必要な独立性はこれで担保される。
 
-worktree の後始末は行わない。`.trinity/` は gitignore されており、worktree は監査ログとして残す。ユーザーが不要と判断したときに `git worktree remove` する。
+worktree の後始末は `git-merge` スキルが担う。オーケストレーター自身は worktree の削除を行わない。

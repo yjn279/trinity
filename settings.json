@@ -5,7 +5,15 @@
       "Bash(git worktree:*)",
       "Bash(git -C *:*)",
       "Bash(mkdir -p:*)",
-      "Bash(cat .trinity/*)"
+      "Bash(cat .trinity/*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr close:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(git push:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(rm -rf .trinity/*)"
     ]
   }
 }

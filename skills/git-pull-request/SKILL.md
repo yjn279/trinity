@@ -1,0 +1,97 @@
+---
+name: git-pull-request
+description: "Generator がコミットを積んだ worktree のブランチを origin に push し、PR を作成する。push が既存リモートブランチを上書きしないことを保証する。"
+when-to-use: "worktree ブランチの push と PR 作成が必要なときに使う。呼び出し側から渡すのは PR タイトルと PR 本文のみ。"
+tools: Bash
+---
+
+# 役割
+
+worktree のブランチを `origin` に push し、Pull Request を作成するスキルである。push の衝突防止を含み、worktree パスとベースブランチはスキル内部で推測する。呼び出し側から渡すのは PR タイトルと PR 本文のみで、Trinity 固有の情報（plan / eval / run meta）はスキル仕様に含まない。
+
+# 受け取る入力
+
+- **PR タイトル**（文字列）
+- **PR 本文**（文字列）
+
+これ以外のパラメータ（worktree パス、ブランチ名、ベースブランチ名、リポジトリ情報など）は呼び出し側から受け取らない。
+
+PR 本文の組み立て（plan.md の目的・受け入れ基準の引用、eval レポートの判定セクションの引用など）は呼び出し側の責任で行い、完成した文字列としてこのスキルに渡す。
+
+# スキル内で推測する項目
+
+| 項目 | 推測方法 |
+| --- | --- |
+| worktree パス | `git worktree list --porcelain` から現在の作業ブランチに紐づく非メイン worktree を選択する |
+| ブランチ名 | 上記 worktree の `branch` フィールド（HEAD ref） |
+| ベースブランチ | `git merge-base --fork-point <known-base> HEAD` または reflog から、worktree のブランチが分岐した親ブランチを推測する。複数候補になる場合のみユーザーに選択肢を提示する |
+| リモート owner/repo | `git -C "$WORKTREE_DIR" remote get-url origin` からパースする |
+
+# ワークフロー
+
+1. **worktree と作業ブランチを特定する**
+
+   `git worktree list --porcelain` の出力を解析し、現在進行中の作業が含まれる非メイン worktree（`branch: refs/heads/trinity/` で始まるもの）を選択する。
+
+   ```shell
+   git worktree list --porcelain
+   ```
+
+   `WORKTREE_DIR` と `BRANCH` を確定する。
+
+2. **ベースブランチを推測する**
+
+   ```shell
+   git -C "$WORKTREE_DIR" log --oneline --decorate | head -20
+   git -C "$WORKTREE_DIR" for-each-ref --format='%(refname:short)' refs/heads/ | grep -v "^trinity/"
+   ```
+
+   reflog とブランチ一覧から、このブランチが切り出された元ブランチ（通常 `main` または `master`）を推測する。候補が一意に決まらない場合のみユーザーに確認する。
+
+3. **リモート同名ブランチの存在を確認する（push 上書き防止）**
+
+   push の前に `git ls-remote --heads origin <branch>` でリモート同名ブランチの存在を確認する。
+
+   ```shell
+   git -C "$WORKTREE_DIR" ls-remote --heads origin "$BRANCH"
+   ```
+
+   - **リモートにブランチが存在しない場合**: 通常通り push を進める。
+   - **リモートにブランチが存在する場合**: push を中断し、ユーザーに次のメッセージを通知して停止する。
+     > `origin/<branch>` がすでに存在します。上書き push は行いません。リモートブランチを手動で確認・削除した後、再度実行してください。
+
+   ブランチ命名に秒精度のタイムスタンプが含まれる場合でも、命名規約に頼らずこのチェックを必ず実施する。
+
+4. **push する（ネットワーク要因の再試行付き）**
+
+   ```shell
+   git -C "$WORKTREE_DIR" push -u origin "$BRANCH"
+   ```
+
+   失敗がネットワーク要因（exit code による判定）のときのみ、最大 4 回 exponential backoff で再試行する（2s、4s、8s、16s）。権限エラー・ブランチ保護など、ネットワーク以外の原因による失敗はそのまま停止してユーザーに報告する。
+
+5. **PR を作成する**
+
+   リモート URL から owner/repo を取得し、`gh pr create` で PR を作成する。
+
+   ```shell
+   gh pr create \
+     --title "$PR_TITLE" \
+     --body "$PR_BODY" \
+     --base "$BASE_BRANCH" \
+     --head "$BRANCH"
+   ```
+
+   `gh` が利用できない環境では `mcp__github__create_pull_request` ツールで代替する。
+
+# 副作用
+
+- `git push -u origin <branch>` を実行し、リモートにブランチを作成する。
+- `gh pr create` または `mcp__github__create_pull_request` で PR を作成する。
+
+# 出力
+
+| 項目 | 内容 |
+| --- | --- |
+| PR URL | 作成された PR の URL |
+| push 結果 | push 成功 / 失敗 / 中断（リモート同名ブランチ存在） |
