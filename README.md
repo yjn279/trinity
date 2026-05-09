@@ -211,6 +211,16 @@ trinity/
 
 run ディレクトリ名は UTC 基本形式のタイムスタンプ（`YYYYMMDDTHHMMSSZ`）と、要件から派生した英字 kebab-case の slug を `-` で連結する。コロンを含まないので Windows でも安全に扱える。同一秒で衝突した場合は slug 末尾に `-2` `-3` などを付ける。
 
+### resume 時の中間成果物の再利用
+
+`/trinity:run --resume=<RUN_DIR>` を使うと、既存の run ディレクトリ内の成果物がそのまま再利用される。新しい run ディレクトリや worktree は作成されない。
+
+- `plan.md` — Planner が書き出した計画。再開後の Generator/Evaluator がそのまま読む。`plan.md` がなければ Planner から開始する
+- `eval-*.md` — Evaluator の判定レポート。最大番号 N の判定（`PASS` / `NEEDS_REVISION` / `FAIL`）から再開ポイントを決定する。`eval-*.md` がなければ Generator から再開する
+- `worktree/` — Generator が書き込んだ隔離 git worktree。ブランチ名も含めてそのまま継続利用される
+
+resume 起動時は `trinity.log` に `=== <TS>-<SLUG> run resumed from iter <n> ===` の行が追記され、後から再開イベントを監査できる。
+
 ## 5. 作業領域の隔離（worktree モデル）
 
 `/trinity:run` は起動時のブランチを `BASE_BRANCH` として記録し、それ以降このブランチには一切手を触れない。代わりに `BASE_BRANCH` から派生した新しいブランチ `trinity/<TS>-<slug>` を、別ディレクトリ `.trinity/<run>/worktree/` に git worktree として展開する。Generator はその中だけで読み書きとコミットを行う。
@@ -265,6 +275,31 @@ trinity/20260429T153000Z-add-theme-toggle  ← 新規ブランチ
 `MAX_ITER` の既定値は 15 である。短いタスクで素早く回したいときは `--max-iter=3` のように下げる。長時間で品質を追い込みたいタスクほど既定値が活きる構成になっている。
 
 `/trinity:run` を起動した時点で、ユーザーはパイプライン全体（worktree 作成、ブランチ push、PR 作成）への明示的な許可を出したものとして扱う。PR 作成まではユーザー確認を取らずに進める。PR 作成後はマージの可否を `AskUserQuestion` で都度確認し、承認時のみリモートマージとクリーンアップを行う。NEEDS_REVISION / FAIL のまま `MAX_ITER` に達した場合は、push・PR 作成・マージ確認・クリーンアップのいずれも行わず、最新の評価レポートのパスを表示して停止する。黙って延々と繰り返さない。
+
+### resume モード
+
+API 課金エラーやレートリミットで実行が途中で止まった場合、`--resume` オプションで既存の run を続きから再開できる。
+
+```shell
+# 既存 RUN_DIR の絶対パスを渡す
+/trinity:run --resume=/path/to/.trinity/20260429T153000Z-add-theme-toggle
+
+# run ディレクトリ名だけを渡す（<repo-root>/.trinity/<value> に補完される）
+/trinity:run --resume=20260429T153000Z-add-theme-toggle
+
+# MAX_ITER を変えて再開する（既定値 15）
+/trinity:run --resume=20260429T153000Z-add-theme-toggle --max-iter=20
+```
+
+resume 時の前提と挙動は次のとおりである。
+
+- 指定した RUN_DIR 内の `worktree/` が git worktree として登録されていること。未登録なら停止して報告する
+- `worktree/` の working tree が clean であること。dirty なら停止し、状況確認を促す
+- `plan.md` がなければ通常起動と同じく Planner から開始する
+- `plan.md` があり `eval-*.md` がなければ、Planner をスキップして Generator から再開する（イテレーション 1）
+- `eval-N.md` の判定が `PASS` であれば、ループに入らず最終化（push + PR 作成）に直行する
+- `eval-N.md` の判定が `NEEDS_REVISION` / `FAIL` であれば、`n = N + 1` から通常ループを再開する
+- 要件文と `--resume` の同時指定はできない。誤投入を防ぐため停止して報告する
 
 ## 9. 評価軸（Evaluator）
 
