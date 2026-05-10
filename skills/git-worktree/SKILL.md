@@ -1,18 +1,23 @@
 ---
 name: git-worktree
-description: "隔離 worktree を作成するスキル。通常モード（new-branch）では origin/<デフォルトブランチ> を base として新規ブランチを切る。既存 PR モード（existing-pr）では呼び出し側が自動判断で確定した PR 番号を受け取り PR の head ブランチを worktree にチェックアウトする。"
-when-to-use: "隔離された git worktree が必要なときに使う。通常モードではスラッグのみ渡す。既存 PR モードでは呼び出し側が自動判断で確定した PR_NUMBER とスラッグを渡す。"
+description: "隔離 worktree を作成するスキル。PR_NUMBER が渡されない場合は origin/<デフォルトブランチ> を base として新規ブランチを切る。PR_NUMBER が渡された場合はその PR の head ブランチを worktree にチェックアウトする（新規ブランチは作らない）。"
+when-to-use: "隔離された git worktree が必要なときに使う。新規ブランチで始める場合はスラッグのみ渡す。既存 PR を継続する場合は PR_NUMBER とスラッグを渡す。"
 tools: Bash
 ---
 
 # 役割
 
-隔離 worktree を作成するスキルである。通常モード（`MODE=new-branch`）ではスラッグのみを受け取り、`origin/<デフォルトブランチ>` を base として新規ブランチを切る（現在の作業ブランチには依存しない）。既存 PR モード（`MODE=existing-pr`）では呼び出し側が自動判断で確定した PR 番号を受け取り、PR の head ブランチを worktree にチェックアウトする（新規ブランチを作らない）。タイムスタンプとログ追記まで行い、後続の処理に必要なパスとブランチ名を返す。
+隔離 worktree を作成するスキルである。`PR_NUMBER` が渡されたかどうかで挙動が自然に分かれる。
+
+- **`PR_NUMBER` が渡されない場合**: スラッグから `trinity/<TS>-<SLUG>` 形式の新規ブランチを作り、`origin/<デフォルトブランチ>` の最新コミットを base として worktree にチェックアウトする（現在の作業ブランチには依存しない）。
+- **`PR_NUMBER` が渡された場合**: その PR の head ブランチを worktree にチェックアウトする。新規ブランチは作らない。
+
+タイムスタンプとログ追記まで行い、後続の処理に必要なパスとブランチ名を返す。
 
 # 受け取る入力
 
-- **スラッグ**（kebab-case 2〜5 語、要件から派生）。例: `add-theme-toggle`
-- **`PR_NUMBER`**（正の整数、呼び出し側が自動判断で確定した値）。`MODE=existing-pr` のときのみ。`MODE=new-branch` のときは不要
+- **スラッグ**（kebab-case 2〜5 語、要件または PR タイトルから派生）。例: `add-theme-toggle`
+- **`PR_NUMBER`**（正の整数、任意）— 既存 PR を継続する場合に渡す
 
 これ以外のパラメータ（リポジトリパス、ログファイルパス、ベースブランチ名など）は呼び出し側から受け取らない。
 
@@ -28,7 +33,9 @@ tools: Bash
 
 # ワークフロー
 
-## 共通: リポジトリルートとデフォルトブランチを取得する
+## ステップ 1: 共通の前準備
+
+リポジトリルートとデフォルトブランチを取得する。
 
 ```shell
 REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -42,15 +49,7 @@ if [ -z "$DEFAULT_BRANCH" ]; then
 fi
 ```
 
-## モード分岐
-
-呼び出し側から `PR_NUMBER` が渡された場合は `MODE=existing-pr` で動作する。渡されなかった場合は `MODE=new-branch` で動作する。
-
----
-
-## MODE=new-branch（通常モード）
-
-### ステップ 1: タイムスタンプと run ディレクトリ名を決定する
+タイムスタンプと run ディレクトリ名を決定する。
 
 ```shell
 TS=$(date -u +%Y%m%dT%H%M%SZ)
@@ -60,29 +59,34 @@ RUN_NAME="${TS}-${SLUG}"
 
 同一タイムスタンプで衝突（`${REPO_ROOT}/.trinity/${RUN_NAME}` がすでに存在する）した場合は `SLUG` 末尾に `-2` `-3` を付けて一意化する。
 
-### ステップ 2: パスとブランチ名を確定する
-
 ```shell
 RUN_DIR="${REPO_ROOT}/.trinity/${RUN_NAME}"
 WORKTREE_DIR="${RUN_DIR}/worktree"
-BRANCH="trinity/${RUN_NAME}"
 LOG_FILE="${REPO_ROOT}/.trinity/trinity.log"
+mkdir -p "${RUN_DIR}"
+```
+
+## ステップ 2: PR_NUMBER の有無で分岐する
+
+`PR_NUMBER` が渡されたかどうかで以降の動きが自然に変わる。
+
+### `PR_NUMBER` が渡されていない場合（新規ブランチ経路）
+
+ブランチ名と base を確定する。
+
+```shell
+BRANCH="trinity/${RUN_NAME}"
 BASE_BRANCH="${DEFAULT_BRANCH}"
 ```
 
-### ステップ 3: origin/<デフォルトブランチ> から worktree を作成する
-
-現在の作業ブランチには依存しない。必ず `origin/<DEFAULT_BRANCH>` の最新コミットを base とする。
+`origin/<DEFAULT_BRANCH>` の最新を fetch し、そこから派生する新規ブランチを worktree にチェックアウトする。現在の作業ブランチには依存しない。
 
 ```shell
 git fetch origin "${DEFAULT_BRANCH}"
-mkdir -p "${RUN_DIR}"
 git worktree add -b "${BRANCH}" "${WORKTREE_DIR}" "origin/${DEFAULT_BRANCH}"
 ```
 
-### ステップ 4: trinity.log に開始行を追記する
-
-`LOG_FILE` が存在しない場合は作成してから追記する。
+trinity.log に開始行を追記する。
 
 ```shell
 mkdir -p "${REPO_ROOT}/.trinity"
@@ -90,13 +94,9 @@ printf '=== %s run started on %s (base=%s) ===\n' \
   "${RUN_NAME}" "${BRANCH}" "${BASE_BRANCH}" >> "${LOG_FILE}"
 ```
 
----
+### `PR_NUMBER` が渡されている場合（既存 PR 継続経路）
 
-## MODE=existing-pr（既存 PR モード）
-
-### 事前チェック: PR の状態を確認する
-
-PR が open でなければ停止して報告する。closed または merged の PR への追加 push は行わない。
+PR の状態を確認する。open でなければ停止する（closed または merged の PR への追加 push は行わない）。
 
 ```shell
 PR_STATE=$(gh pr view "${PR_NUMBER}" --json state -q .state 2>/dev/null)
@@ -106,90 +106,56 @@ if [ "$PR_STATE" != "OPEN" ]; then
 fi
 ```
 
-### ステップ 1: PR 情報を取得する
+PR 情報を取得する。
 
 ```shell
 PR_HEAD_BRANCH=$(gh pr view "${PR_NUMBER}" --json headRefName -q .headRefName)
 PR_BASE_BRANCH=$(gh pr view "${PR_NUMBER}" --json baseRefName -q .baseRefName)
-PR_TITLE=$(gh pr view "${PR_NUMBER}" --json title -q .title)
 PR_URL=$(gh pr view "${PR_NUMBER}" --json url -q .url)
-```
 
-スラッグは呼び出し側から受け取った値を使う（PR タイトルから派生させた kebab-case スラッグ）。
-
-### ステップ 2: タイムスタンプと run ディレクトリ名を決定する
-
-```shell
-TS=$(date -u +%Y%m%dT%H%M%SZ)
-RUN_NAME="${TS}-${SLUG}"
-```
-
-同一タイムスタンプで衝突（`${REPO_ROOT}/.trinity/${RUN_NAME}` がすでに存在する）した場合は `SLUG` 末尾に `-2` `-3` を付けて一意化する。
-
-### ステップ 3: パスを確定する
-
-```shell
-RUN_DIR="${REPO_ROOT}/.trinity/${RUN_NAME}"
-WORKTREE_DIR="${RUN_DIR}/worktree"
 BRANCH="${PR_HEAD_BRANCH}"
-LOG_FILE="${REPO_ROOT}/.trinity/trinity.log"
 BASE_BRANCH="${PR_BASE_BRANCH}"
 ```
 
-既存 PR モードでは新規ブランチを作らず、PR の head ブランチ名をそのまま `BRANCH` に使う。
-
-### ステップ 4: ローカルブランチ・worktree の競合を確認する
-
-PR の head ブランチがローカルに既に存在する場合、または worktree に既にチェックアウト済みの場合は、次のいずれかを確認してから進む。
+ローカルブランチ・worktree の競合を確認する。
 
 ```shell
-# ローカルブランチの存在確認
 LOCAL_BRANCH=$(git branch --list "${BRANCH}")
-
-# worktree での使用確認
 WORKTREE_IN_USE=$(git worktree list --porcelain | grep "branch refs/heads/${BRANCH}")
 ```
 
-- **ローカルブランチが存在し worktree で使用中の場合**: 停止し、既に `${WORKTREE_DIR}` に同一ブランチがチェックアウトされている旨をユーザーに報告する。`--resume` モードの利用を案内する。
-- **ローカルブランチが存在するが worktree 未使用の場合**: 既存ローカルブランチを削除してから新規 worktree を作成する（下記参照）。
-- **ローカルブランチが存在しない場合**: 通常通り worktree を作成する。
+- ローカルブランチが存在し worktree で使用中 → 停止し、既に同一ブランチがチェックアウトされている旨をユーザーに報告する。`--resume` の利用を案内する。
+- ローカルブランチが存在するが worktree 未使用 → 既存ローカルブランチを削除してから新規 worktree を作成する。
+- ローカルブランチが存在しない → 通常通り worktree を作成する。
 
-### ステップ 5: worktree を作成する
-
-PR の head ブランチを fetch し、worktree にチェックアウトする。
+PR の head ブランチを fetch し、worktree にチェックアウトする。新規ブランチは作らない。
 
 ```shell
 git fetch origin "${PR_HEAD_BRANCH}"
-mkdir -p "${RUN_DIR}"
 
 if [ -n "$LOCAL_BRANCH" ] && [ -z "$WORKTREE_IN_USE" ]; then
-  # 既存ローカルブランチを削除してから worktree 作成
   git branch -D "${BRANCH}"
 fi
 
-# 新規ブランチは作らず origin の head ブランチを直接チェックアウト
 git worktree add "${WORKTREE_DIR}" "origin/${PR_HEAD_BRANCH}"
-# ローカル追跡ブランチを head と同名にする
 git -C "${WORKTREE_DIR}" checkout -b "${PR_HEAD_BRANCH}" --track "origin/${PR_HEAD_BRANCH}" 2>/dev/null || \
   git -C "${WORKTREE_DIR}" checkout "${PR_HEAD_BRANCH}"
 ```
 
-### ステップ 6: trinity.log に開始行を追記する
+trinity.log に開始行を追記する（PR 番号も記録する）。
 
 ```shell
 mkdir -p "${REPO_ROOT}/.trinity"
-printf '=== %s run started on %s (existing-pr=#%s base=%s) ===\n' \
+printf '=== %s run started on %s (continuing PR #%s, base=%s) ===\n' \
   "${RUN_NAME}" "${BRANCH}" "${PR_NUMBER}" "${BASE_BRANCH}" >> "${LOG_FILE}"
 ```
-
----
 
 # 副作用
 
 - `${RUN_DIR}/` ディレクトリを新規作成する。
 - `git worktree add` で `${WORKTREE_DIR}/` にブランチをチェックアウトする。
-  - `new-branch` モード: 新規ブランチを `origin/<DEFAULT_BRANCH>` から派生させて作成する。
-  - `existing-pr` モード: PR の head ブランチを既存ブランチとしてチェックアウトする（新規ブランチは作らない）。
+  - 新規ブランチ経路: 新規ブランチを `origin/<DEFAULT_BRANCH>` から派生させて作成する。
+  - 既存 PR 継続経路: PR の head ブランチを既存ブランチとしてチェックアウトする（新規ブランチは作らない）。
 - `${LOG_FILE}` に開始行を 1 行追記する。
 
 # 出力
@@ -198,10 +164,9 @@ printf '=== %s run started on %s (existing-pr=#%s base=%s) ===\n' \
 
 | 変数 | 内容 |
 | --- | --- |
-| `MODE` | `new-branch`（通常モード）または `existing-pr`（既存 PR モード） |
 | `RUN_DIR` | run ディレクトリの絶対パス（例: `/path/to/repo/.trinity/20260429T153000Z-add-theme-toggle`） |
 | `WORKTREE_DIR` | worktree の絶対パス（`${RUN_DIR}/worktree`） |
-| `BRANCH` | ブランチ名（`new-branch` モード: `trinity/<TS>-<SLUG>` 形式。`existing-pr` モード: PR の head ブランチ名） |
-| `BASE_BRANCH` | base ブランチ名（`new-branch` モード: `DEFAULT_BRANCH` の値（例: `main`）。`existing-pr` モード: PR の base ブランチ名） |
-| `PR_NUMBER` | `existing-pr` モードのみ。引数で渡した PR 番号 |
-| `PR_URL` | `existing-pr` モードのみ。PR の URL |
+| `BRANCH` | ブランチ名（新規ブランチ経路: `trinity/<TS>-<SLUG>` 形式。既存 PR 継続経路: PR の head ブランチ名） |
+| `BASE_BRANCH` | base ブランチ名（新規ブランチ経路: `DEFAULT_BRANCH`（例: `main`）。既存 PR 継続経路: PR の base ブランチ名） |
+| `PR_NUMBER` | 既存 PR 継続経路のみ。引数で渡した PR 番号 |
+| `PR_URL` | 既存 PR 継続経路のみ。PR の URL |
