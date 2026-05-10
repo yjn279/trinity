@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(jq -r '.prompt // empty' 2>/dev/null); case \"$p\" in /trinity:run*) if ! git rev-parse --git-dir >/dev/null 2>&1; then echo 'trinity: not inside a git repository.' >&2; exit 2; fi; if [ -n \"$(git status --porcelain)\" ]; then echo 'trinity: working tree is dirty. Commit or stash before /trinity:run.' >&2; exit 2; fi; printf 'trinity: starting on branch %s\\n' \"$(git rev-parse --abbrev-ref HEAD)\" >&2 ;; esac"
+            "command": "p=$(jq -r '.prompt // empty' 2>/dev/null); case \"$p\" in /trinity:run*) if ! git rev-parse --git-dir >/dev/null 2>&1; then echo 'trinity: not inside a git repository.' >&2; exit 2; fi; if [ -n \"$(git status --porcelain)\" ]; then echo 'trinity: working tree is dirty. Commit or stash before /trinity:run.' >&2; exit 2; fi; _branch=$(git rev-parse --abbrev-ref HEAD); printf 'trinity: starting on branch %s\\n' \"$_branch\" >&2; _default=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||'); [ -z \"$_default\" ] && _default=main; if [ \"$_branch\" != \"$_default\" ]; then printf 'trinity: warning: current branch is not %s. The worktree will still be based on origin/%s regardless of your current branch.\\n' \"$_default\" \"$_default\" >&2; fi ;; esac"
           }
         ]
       }
