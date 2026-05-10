@@ -278,26 +278,7 @@ trinity/20260429T153000Z-add-theme-toggle  ← 新規ブランチ
 
 `/trinity:run` を起動した時点で、ユーザーはパイプライン全体（worktree 作成、ブランチ push、PR 作成）への明示的な許可を出したものとして扱う。PR 作成まではユーザー確認を取らずに進める。PR 作成後はマージの可否を `AskUserQuestion` で都度確認し、承認時のみリモートマージとクリーンアップを行う。NEEDS_REVISION / FAIL のまま `MAX_ITER` に達した場合は、push・PR 作成・マージ確認・クリーンアップのいずれも行わず、最新の評価レポートのパスを表示して停止する。黙って延々と繰り返さない。
 
-### 既存 PR へ追加 push するモード（`--pr=<N>`）
-
-レビュアーのコメントを受けて既存の PR に追加で push したい場合、`--pr=<N>` で PR 番号を指定する。
-
-```shell
-# PR #42 の head ブランチを worktree にチェックアウトして Trinity ループを実行し、
-# ループ完了後に新規 PR を作らず PR #42 へ追加 push する
-/trinity:run --pr=42 "reflow margin の修正とレビュー指摘の対応"
-
-# MAX_ITER と組み合わせる
-/trinity:run --pr=42 --max-iter=3 "型エラーを修正する"
-```
-
-`--pr=<N>` 経路での挙動は次のとおりである。
-
-- Trinity ループは新規 `plan.md` を書き起こして実行する（`--resume` と異なり既存 plan を引き継がない）
-- 最終化で新規 PR は作成しない。既存 PR #N のブランチへ fast-forward push するだけである
-- PR 本体（タイトル・本文）は更新しない
-- `--resume` との同時指定は不可。両者の使い分けを案内して停止する
-- 要件文は必須。空のまま `--pr` だけ渡すと停止して案内する
+**既存 PR への追加 push（自動判断）**: `trinity/` プレフィックスを持つブランチ上にいて、そのブランチに紐づく open PR が 1 件存在する状態で `/trinity:run <要件>` を実行すると、Trinity が自動でその PR への追加 push 経路（`MODE=existing-pr`）で動作する。新規ブランチを切りたい場合は `git checkout main` などで base ブランチに戻ってから実行する。
 
 ### resume モード
 
