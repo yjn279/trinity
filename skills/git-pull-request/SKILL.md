@@ -1,13 +1,13 @@
 ---
 name: git-pull-request
 description: "Generator がコミットを積んだ worktree のブランチを origin に push し、PR を作成または既存 PR に追加 push する。MODE=new-branch では新規 PR を作成する。MODE=existing-pr では fast-forward push のみを行い gh pr create はスキップする。"
-when-to-use: "worktree ブランチの push と PR 作成（または既存 PR への追加 push）が必要なときに使う。呼び出し側から渡すのは MODE と PR タイトル・PR 本文（new-branch モード）または MODE と PR_NUMBER（existing-pr モード）のみ。"
+when-to-use: "worktree ブランチの push と PR 作成（または既存 PR への追加 push）が必要なときに使う。呼び出し側から渡すのは、呼び出し側が自動判断した MODE と PR タイトル・PR 本文（new-branch モード）または MODE と PR_NUMBER（existing-pr モード）のみ。"
 tools: Bash
 ---
 
 # 役割
 
-worktree のブランチを `origin` に push し、Pull Request を作成または既存 PR に追加 push するスキルである。`MODE=new-branch` では push の衝突防止を含む新規 PR 作成を行う。`MODE=existing-pr` では fast-forward 可否を確認した上で既存 PR ブランチへ追加 push するのみで `gh pr create` は呼ばない。worktree パス・ブランチ名・ベースブランチはスキル内部で推測する。
+worktree のブランチを `origin` に push し、Pull Request を作成または既存 PR に追加 push するスキルである。`MODE=new-branch` では push の衝突防止を含む新規 PR 作成を行う。`MODE=existing-pr` では fast-forward 可否を確認した上で既存 PR ブランチへ追加 push するのみで `gh pr create` は呼ばない。worktree パス・ブランチ名・ベースブランチはスキル内部で推測する。呼び出し側（Orchestrator）が実行手順 1 の自動判断で確定した `MODE` をそのまま受け取り、スキル内の MODE 分岐に従って動作する。
 
 # 受け取る入力
 

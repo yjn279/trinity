@@ -1,18 +1,18 @@
 ---
 name: git-worktree
-description: "隔離 worktree を作成するスキル。通常モード（new-branch）では origin/<デフォルトブランチ> を base として新規ブランチを切る。既存 PR モード（existing-pr）では PR 番号を受け取り PR の head ブランチを worktree にチェックアウトする。"
-when-to-use: "隔離された git worktree が必要なときに使う。通常モードではスラッグのみ渡す。既存 PR モードでは PR_NUMBER とスラッグを渡す。"
+description: "隔離 worktree を作成するスキル。通常モード（new-branch）では origin/<デフォルトブランチ> を base として新規ブランチを切る。既存 PR モード（existing-pr）では呼び出し側が自動判断で確定した PR 番号を受け取り PR の head ブランチを worktree にチェックアウトする。"
+when-to-use: "隔離された git worktree が必要なときに使う。通常モードではスラッグのみ渡す。既存 PR モードでは呼び出し側が自動判断で確定した PR_NUMBER とスラッグを渡す。"
 tools: Bash
 ---
 
 # 役割
 
-隔離 worktree を作成するスキルである。通常モード（`MODE=new-branch`）ではスラッグのみを受け取り、`origin/<デフォルトブランチ>` を base として新規ブランチを切る（現在の作業ブランチには依存しない）。既存 PR モード（`MODE=existing-pr`）では PR 番号を受け取り、PR の head ブランチを worktree にチェックアウトする（新規ブランチを作らない）。タイムスタンプとログ追記まで行い、後続の処理に必要なパスとブランチ名を返す。
+隔離 worktree を作成するスキルである。通常モード（`MODE=new-branch`）ではスラッグのみを受け取り、`origin/<デフォルトブランチ>` を base として新規ブランチを切る（現在の作業ブランチには依存しない）。既存 PR モード（`MODE=existing-pr`）では呼び出し側が自動判断で確定した PR 番号を受け取り、PR の head ブランチを worktree にチェックアウトする（新規ブランチを作らない）。タイムスタンプとログ追記まで行い、後続の処理に必要なパスとブランチ名を返す。
 
 # 受け取る入力
 
 - **スラッグ**（kebab-case 2〜5 語、要件から派生）。例: `add-theme-toggle`
-- **`PR_NUMBER`**（正の整数、`--pr=<N>` 由来）。`MODE=existing-pr` のときのみ。`MODE=new-branch` のときは不要
+- **`PR_NUMBER`**（正の整数、呼び出し側が自動判断で確定した値）。`MODE=existing-pr` のときのみ。`MODE=new-branch` のときは不要
 
 これ以外のパラメータ（リポジトリパス、ログファイルパス、ベースブランチ名など）は呼び出し側から受け取らない。
 
