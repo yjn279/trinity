@@ -61,6 +61,10 @@ flowchart TD
 
 `/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は `AskUserQuestion` で修正要否・課題起票・クリーンアップを都度確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境が残っていれば再実行で続きから再開する。
 
+## リリース運用
+
+詳細は [`docs/release.md`](docs/release.md) を参照する。
+
 ## 参考資料
 
 - Anthropic「Harness design for long-running apps」 https://www.anthropic.com/engineering/harness-design-long-running-apps

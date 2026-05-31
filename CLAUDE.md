@@ -51,5 +51,5 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 agent 定義とプロンプトを書き換える際の約束を以下に示す。
 
 - ドキュメントとプロンプトはすべて日本語で書き、既存のトーンに合わせる。
-- 配布メタデータを変えるときは `.claude-plugin/plugin.json` と `.claude-plugin/marketplace.json` の name とバージョンを揃える。
-- コミットメッセージは日本語の命令形で書き、末尾に PR 番号を付ける（例： `プラグイン配布用の marketplace.json を追加する (#38)` ）。
+- 配布メタデータを変えるときは `.claude-plugin/plugin.json` と `.claude-plugin/marketplace.json` の `name` を揃える。バージョンの単一の正は `plugin.json` の `version` フィールドであり、`version` の更新は release-please が `extra-files` 経由でリリース PR のマージ時に自動で行う（`marketplace.json` に `version` フィールドは持たせない）。現行バージョンの記録は `.release-please-manifest.json` が担う。リリース手順の詳細は `docs/release.md` を参照する。
+- コミット・PR タイトルは Conventional Commits 接頭辞（`feat:`・`fix:`・`feat!:` など）を付けた日本語命令形で書く（例： `feat: release-please でリリースを自動化する`）。release-please はこの接頭辞からバージョン増分（patch / minor / major）を算出するため、接頭辞は必須である。PR 番号は squash merge が自動付与するため本文に手書きしない。
