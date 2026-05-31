@@ -61,6 +61,31 @@ flowchart TD
 
 `/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は `AskUserQuestion` で修正要否・課題起票・クリーンアップを都度確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境が残っていれば再実行で続きから再開する。
 
+## リリース運用
+
+### リリース手順
+
+1. プロンプトやドキュメントを変更する。
+2. `.claude-plugin/plugin.json` の `version` を semver に従って上げる。
+3. 必要に応じて `.claude-plugin/marketplace.json` の `name` 等のメタデータを整合させる（`marketplace.json` には現状 `version` フィールドが無く、バージョンは `plugin.json` が単一の正として管理する）。
+4. push する。
+
+プラグインキャッシュは `version` でキー管理されるため、変更を反映させるには `plugin.json` の `version` を必ず上げること。
+
+### semver 基準
+
+Trinity の実体はマークダウンのプロンプト定義であり、バイナリやライブラリとは性質が異なる。以下の基準を適用する。
+
+| バージョン | 対象となる変更 |
+| :-- | :-- |
+| `patch` | プロンプトやドキュメントの軽微な修正・表現の整形・誤字訂正など、挙動・規約に影響しない変更 |
+| `minor` | エージェントの役割・制約・ループ制御などの規約追加や挙動の改善。後方互換を保った新機能の追加 |
+| `major` | エージェント構成や通信プロトコルの互換を壊す再設計。使い方・インターフェースが根本から変わる変更 |
+
+### 自動化について
+
+変更があるのに `version` を据え置く状態の自動検知は設けない。Trinity はビルドやテストのツールチェーンを持たず CI も不在であり、手動運用で十分かつ Simplicity 原則に沿う。
+
 ## 参考資料
 
 - Anthropic「Harness design for long-running apps」 https://www.anthropic.com/engineering/harness-design-long-running-apps
