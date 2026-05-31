@@ -50,5 +50,5 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 agent 定義とプロンプトを書き換える際の約束を以下に示す。
 
 - ドキュメントとプロンプトはすべて日本語で書き、既存のトーンに合わせる。
-- 配布メタデータを変えるときは `.claude-plugin/plugin.json` と `.claude-plugin/marketplace.json` の `name` を揃える。バージョンは `plugin.json` が単一の正として管理し、`version` の更新は main マージ時に CI が自動で行う（`marketplace.json` に `version` フィールドは持たせない）。リリース手順の詳細は `docs/release.md` を参照する。
+- 配布メタデータを変えるときは `.claude-plugin/plugin.json` と `.claude-plugin/marketplace.json` の `name` を揃える。バージョンは `plugin.json` が単一の正として管理し、`version` の更新は GitHub Release を publish したときに CI が自動で行う（`marketplace.json` に `version` フィールドは持たせない）。リリース手順の詳細は `docs/release.md` を参照する。
 - コミットメッセージは日本語の命令形で書き、末尾に PR 番号を付ける（例： `プラグイン配布用の marketplace.json を追加する (#38)` ）。
