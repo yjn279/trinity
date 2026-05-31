@@ -32,4 +32,4 @@ Trinity の実体はマークダウンのプロンプト定義であり、バイ
 
 プラグインキャッシュは `version` でキー管理される。変更を反映させるには `plugin.json` の `version` を上げる必要がある。
 
-バージョンの単一の正は `.claude-plugin/plugin.json` の `version` フィールドである。`.claude-plugin/marketplace.json` には `version` フィールドを持たせない。
+バージョンの単一の正は `.claude-plugin/plugin.json` の `version` フィールドである。`.claude-plugin/marketplace.json` には `version` フィールドを持たせない。利用側は `marketplace.json` 経由で `trinity@main` を追従するため、CI が main に書き戻したバージョンが自動的に反映される。
