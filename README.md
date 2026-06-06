@@ -50,6 +50,13 @@ flowchart TD
 
 `PASS` 後はオーケストレーターが push して PR を作成し、 `AskUserQuestion` で修正要否・課題起票・クリーンアップを順に確認する。
 
+## 前提条件
+
+Trinity を動かすには、以下のスキル／コマンドを事前にインストールする。
+
+- [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow) — worktree の作成・ブランチ管理・PR 統合を担うスキル。Orchestrator はこのスキルに git 運用を委譲する。
+- [code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review) — Orchestrator がループの別段として子プロセスで変更全体にコードレビューを実施するために使うコマンド。
+
 ## 使い方
 
 代表的な呼び出しを以下に示す。
