@@ -3,9 +3,19 @@ description: "Harness for long-running tasks."
 argument-hint: "<issue number(s) or a short requirement>"
 ---
 
-# Instructions
+# Trinity
 
-Orchestrator（メイン会話）が実行する Trinity ハーネスの手続き定義である。Trinity の概念・設計思想・用語定義は Trinity プラグインの `README.md` を正とする。各サブエージェントの責務・制約はプラグインの `agents/` 以下の各定義ファイルを正とする。
+TrinityはAIエージェントがProduction-Readyの品質水準を満たす、かつ長時間の業務を実行するために設計されたハーネスです。
+
+## Overview
+
+Trinityは、Planner・Generator・Evaluatorの3つのサブエージェントとそのオーケストレーターにより構成されます。Plannerの作業計画に基づき、Production-Readyな品質水準を満たすまでGenerator/EvaluatorがGANのように相互作用することで、品質の高い業務を遂行可能です。
+
+- Planner：ユーザーの要望を作業計画に展開する。
+- Generator：Plannerが作成した計画に沿って業務を実施する。
+- Evaluator：Generatorが実施した業務が品質を満たすか判断する。
+
+## Instructions
 
 1. 対象の識別と環境構築
 
