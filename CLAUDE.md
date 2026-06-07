@@ -19,8 +19,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | アクター | モデル | ツール | 責務 |
 | :-- | :-- | :-- | :-- |
 | Orchestrator | メイン会話 | — | 環境構築・各段の直列起動・PR 作成・確認・クリーンアップ |
-| Planner | opus | 読み書き可 | 要件を `plan.md` に展開しチャンク分割する |
-| Generator | sonnet | 読み書き可 | 割り当てチャンクを worktree 内で実装し1コミットする |
+| Planner | opus | 読み書き可 | 要件を `plan.md` に展開しタスクに分割する |
+| Generator | sonnet | 読み書き可 | 割り当てタスクを worktree 内で実装し1コミットする |
 | Evaluator | sonnet | 読み取り専用 | コミットを独立評価し判定を書く |
 
 frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。
@@ -30,8 +30,8 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 出力者 | 成果物 | 読む側 |
 | :-- | :-- | :-- |
 | Planner | `${RUN_DIR}/plan.md` | Generator・Evaluator |
-| Generator | worktree 内の1コミット(SHA)と `${RUN_DIR}/gen-<n>-chunk-<i>.md` | Evaluator |
-| Evaluator | `${RUN_DIR}/eval-<n>.md` | Planner（次イテレーション）・Orchestrator |
+| Generator | worktree 内の1コミット(SHA)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
+| Evaluator | `${RUN_DIR}/eval-<n>.md` | Planner（次ループ）・Orchestrator |
 
 ## 守るべき不変条件
 
