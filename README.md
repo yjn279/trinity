@@ -81,11 +81,11 @@ flowchart LR
 
 | 判定 | 動作 |
 | :-- | :-- |
-| `PASS` | ループを離脱して PR 作成へ進む |
+| `PASS` | code-review に must-fix が無ければループを離脱して PR 作成へ進む |
 | `NEEDS_REVISION` | Planner が次周回で `plan.md` を上書きして再計画する |
 | `FAIL` | Generator が既存計画の範囲内で修正する |
 
-`PASS` 後はオーケストレーターが push して PR を作成し、 `AskUserQuestion` で修正要否・課題起票・クリーンアップを順に確認する。
+ループの離脱には Evaluator の `PASS` と code-review に must-fix が無いことの両方を要する。条件を満たすとオーケストレーターが push して PR を作成し、 `AskUserQuestion` で修正要否・課題起票・クリーンアップを順に確認する。
 
 ## 前提条件
 
