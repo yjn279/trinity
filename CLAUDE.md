@@ -32,6 +32,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | Planner | `${RUN_DIR}/plan.md` | Generator・Evaluator |
 | Generator | worktree 内の1コミット(SHA)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | Evaluator | `${RUN_DIR}/eval-<n>.md` | Planner（次ループ）・Orchestrator |
+| Orchestrator | `${RUN_DIR}/code-review-<n>.md`（子プロセスの `/code-review` 出力） | Orchestrator（次回ループ実行判断） |
 
 ## 守るべき不変条件
 
@@ -43,7 +44,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}" <cmd>` で操作し、 `cd` で代替しない。ユーザーのチェックアウトには触れない。 |
 | 引用は worktree 相対 | `plan.md` ・ `eval-<n>.md` 内の `path:line` は `WORKTREE_DIR` 起点の相対パスで書く。 |
 | 成果物の置き場所 | `plan.md` ・ `eval-*.md` ・ `gen-*.md` 等のラン成果物は対象プロジェクト側の `.trinity/<run>/` に出る。worktree は `.trinity/` の外に出る（配置規約は git-flow スキルに従う）。このリポジトリではない。 |
-| ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・各ランの `plan.md`・`eval-*.md`・`gen-*.md`）はデバッグのためクリーンアップで削除しない。 |
+| ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・各ランの `plan.md`・退避した過去ループの `plan-*.md`・`eval-*.md`・`gen-*.md`・`code-review-*.md`）はデバッグのためクリーンアップで削除しない。 |
 | 3値判定 | Evaluator は `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。 |
 
 ## 編集時の規約
