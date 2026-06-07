@@ -85,7 +85,7 @@ flowchart LR
 | `NEEDS_REVISION` | Planner が次周回で `plan.md` を上書きして再計画する |
 | `FAIL` | Generator が既存計画の範囲内で修正する |
 
-ループの離脱には Evaluator の `PASS` と code-review に must-fix（`/code-review` の出力に残った finding）が無いことの両方を要する。条件を満たすとオーケストレーターが push して PR を作成し、 `AskUserQuestion` で修正要否・課題起票・クリーンアップを順に確認する。
+ループの離脱には Evaluator の `PASS` と code-review に must-fix（`/code-review` の出力に残った finding）が無いことの両方を要する。条件を満たすとオーケストレーターが push して PR を作成し、マージ候補のヒアリング後に1回の `AskUserQuestion` で課題起票・クリーンアップをまとめて確認する。
 
 ## 前提条件
 
@@ -111,7 +111,7 @@ Trinity を動かすには、以下のスキル／コマンドが必要である
 /trinity:run #12 #15 #20
 ```
 
-`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は `AskUserQuestion` で修正要否・課題起票・クリーンアップを都度確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境が残っていれば再実行で続きから再開する。
+`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後はマージ候補のヒアリングを行い、その後1回の `AskUserQuestion` で課題起票・クリーンアップをまとめて確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境が残っていれば再実行で続きから再開する。
 
 ## リリース運用
 
