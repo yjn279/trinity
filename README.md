@@ -89,10 +89,12 @@ flowchart LR
 
 ## 前提条件
 
-Trinity を動かすには、以下のスキル／コマンドを事前にインストールする。
+Trinity を動かすには、以下のスキル／コマンドが必要である。
 
 - [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow) — worktree の作成・ブランチ管理・PR 統合を担うスキル。Orchestrator はこのスキルに git 運用を委譲する。
 - [code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review) — Orchestrator がループの別段として子プロセスで変更全体にコードレビューを実施するために使うコマンド。
+
+未導入のものがある場合、Trinity は `/trinity:run` 起動時に自動で検出し、確認なしでセットアップを実施する（`~/.claude` への変更を含む）。
 
 ## 使い方
 
