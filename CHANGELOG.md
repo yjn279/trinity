@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/yjn279/trinity/compare/v0.2.0...v0.3.0) (2026-06-07)
+
+
+### Features
+
+* Planner に品質工程の必須規定を追加する ([#52](https://github.com/yjn279/trinity/issues/52)) ([b782c7f](https://github.com/yjn279/trinity/commit/b782c7f878e8bc0466e68d07a006a64e20dc9284))
+* 複数 Issue の並列オーケストレーションを実装する ([#54](https://github.com/yjn279/trinity/issues/54)) ([c9f8c03](https://github.com/yjn279/trinity/commit/c9f8c0390b140645bdd5c041d2bb93d1c2037092))
+
+
+### Bug Fixes
+
+* code-review 段の固定 SHA とハーネスの整合性欠落を修正する ([#68](https://github.com/yjn279/trinity/issues/68)) ([0565e45](https://github.com/yjn279/trinity/commit/0565e458b0d99766e4edb3582840660f41c7df31))
+* Planner の設計分岐確認フローを Orchestrator 側へ移す ([#53](https://github.com/yjn279/trinity/issues/53)) ([4cd0ea2](https://github.com/yjn279/trinity/commit/4cd0ea2b896b831c2de3ae3a68d091d7c725084b))
+
 ## [0.2.0](https://github.com/yjn279/trinity/compare/v0.1.0...v0.2.0) (2026-05-31)
 
 
