@@ -1,6 +1,6 @@
 # Trinity
 
-Trinity は、Anthropic の Planner / Generator / Evaluator パターンを Claude Code のサブエージェントで実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、修正要否・課題起票・クリーンアップをユーザーに確認しながら統合まで進める。
+Trinity は、Anthropic の Planner / Generator / Evaluator パターンを Claude Code のサブエージェントで実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、マージ候補の選択・課題起票・クリーンアップをユーザーに確認しながら進める。
 
 ## なぜ3エージェントに分けるのか
 
@@ -105,7 +105,7 @@ Trinity を動かすには、以下のスキル／コマンドが必要である
 /trinity:run 認証モジュールを JWT からセッション Cookie に移行する。
 ```
 
-複数 Issue を同時に指定できる。互いに影響しない変更は Issue ごとに環境を整備して並列に処理し、それぞれ独立した PR を生む。影響する変更は依存する変更の実装後に後続を直列で実装する。いずれの場合も各 Issue は独立した PR として残し、統合（マージ）はしない。
+複数 Issue を同時に指定できる。互いに影響しない変更は Issue ごとに環境を整備して並列に処理し、それぞれ独立した PR を生む。影響する変更は依存する変更の実装後に後続を直列で実装する。いずれの場合も各 Issue は独立した PR として残し、PR 作成後にユーザーが選択したものだけをマージする。
 
 ```shell
 /trinity:run #12 #15 #20
