@@ -1,12 +1,12 @@
 # リリース運用
 
-Trinity のリリースは release-please による自動化で行う。main を監視した release-please が Conventional Commits の接頭辞からバージョン増分を自動算出し、リリース PR を育て続ける。そのリリース PR をマージした瞬間に、バージョン伝播・CHANGELOG 更新・タグ `vX.Y.Z`・GitHub Release がすべて同時に起きる。後付けの書き戻しは存在しない。
+Trinity のリリースは release-please による自動化で行う。main を監視した release-please が Conventional Commits の接頭辞からバージョン増分を自動算出し、リリース PR を育て続ける。そのリリース PR をマージした瞬間に、バージョン伝播・タグ `vX.Y.Z`・GitHub Release がすべて同時に起きる。後付けの書き戻しは存在しない。
 
 ## リリースの起こし方
 
 1. **変更を Conventional Commits 形式でコミット・PR タイトルに付けて main にマージする。** release-please はコミットタイトルの接頭辞（`feat:`・`fix:` など）からバージョン増分を算出するため、接頭辞は必須である。
-2. **release-please が自動でリリース PR を作成・更新する。** push to main をトリガーに `.github/workflows/release-please.yml` が起動し、次バージョン（例: `v0.2.0`）の CHANGELOG と `plugin.json` の `version` を反映したリリース PR が GitHub 上に現れる（または既存 PR が更新される）。
-3. **リリース内容を確認してリリース PR をマージする。** CHANGELOG が意図した変更を正しく収録しているかをレビューする。問題なければリリース PR をマージする。
+2. **release-please が自動でリリース PR を作成・更新する。** push to main をトリガーに `.github/workflows/release-please.yml` が起動し、次バージョン（例: `v0.2.0`）の `plugin.json` の `version` を反映したリリース PR が GitHub 上に現れる（または既存 PR が更新される）。
+3. **リリース内容を確認してリリース PR をマージする。** バージョン増分が意図した変更に合致しているかをレビューする。問題なければリリース PR をマージする。
 4. **タグ `vX.Y.Z` と GitHub Release が自動で作成される。** リリース PR のマージがそのままリリースとなる。追加の操作は不要である。
 
 ## リリースフロー（概要）
@@ -14,7 +14,7 @@ Trinity のリリースは release-please による自動化で行う。main を
 ```
 main へ PR マージ
   → release-please が「リリース PR」を作成・更新
-      (CHANGELOG / .release-please-manifest.json / .claude-plugin/plugin.json の version を bump)
+      (.release-please-manifest.json / .claude-plugin/plugin.json の version を bump)
   → リリース PR をマージ
       → タグ vX.Y.Z・GitHub Release が自動作成される
 ```
