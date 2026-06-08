@@ -14,6 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## アーキテクチャ
 
+処理単位（セッション・パイプライン・ループ・タスク）の定義は `README.md` の「[## Processing Units](README.md#processing-units)」節を単一の正とする。
+
 オーケストレーターとサブエージェント3者で構成され、各 agent は固有のシステムプロンプトと新鮮なコンテキストを持つ。役割を1つに統合しないのは、コンテキストが膨らむほどドリフトが起き、評価者が自分のコードを甘く見るためである。Orchestrator はメイン会話の Claude、Planner・Generator・Evaluator はサブエージェントで、それぞれの責務と frontmatter を以下に示す。
 
 | アクター | モデル | ツール | 責務 |
