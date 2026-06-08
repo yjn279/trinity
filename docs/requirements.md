@@ -97,6 +97,11 @@ Evaluator は `PASS` / `NEEDS_REVISION` / `FAIL` の3値で判定を返す（PR 
 | `PASS` | ループ脱出条件を確認し、満たしていれば PR 作成へ進む |
 | `NEEDS_REVISION` | Planner が次周回で `plan.md` を上書きして再計画する |
 | `FAIL` | Generator が既存計画の範囲内で修正する |
+| Generator 停止（コミットなし） | Evaluator の評価をスキップし、Planner 再計画（`NEEDS_REVISION` 相当）に直接回す。タスクを既存計画の範囲内で完了できないのは計画または方針側の問題とみなすためである |
+
+### 設計分岐確認フロー
+
+Planner が `plan.md` 冒頭に `## 要確認の論点`（論点・選択肢・推奨の形）を書いた場合、Orchestrator はそのセクションをユーザーへ提示する。ユーザーの回答を受けてから Planner を再起動し、再計画の要否は Planner が判断する。再起動された Planner は解決済みの論点を再掲しない。
 
 ### ループ脱出条件
 
@@ -128,7 +133,7 @@ Evaluator は以下の4軸で成果物を評価する（PR #26）。
 
 ### 品質工程の要求
 
-テスト基盤が整っているプロジェクトでは、Planner は TDD（テスト先行）スタイルでタスクを組み、各フェーズ末尾に簡素化（リファクタ）タスクを必須で配置する（PR #52）。最終タスクとして必ずリファクタリングタスクを置く規約は `agents/planner.md` に残存する。
+テスト基盤が整っているプロジェクトでは、Planner は TDD（テスト先行）スタイルでタスクを組む（PR #52）。また、計画全体の末尾には必ずリファクタリングタスクを1つ配置する（`agents/planner.md`）。
 
 ### Production-Ready を満たすまで完了しない
 
@@ -152,14 +157,14 @@ PR の URL をユーザーへ共有した後、`AskUserQuestion`（`multiSelect=
 
 ### 課題起票と自動検知
 
-マージ候補のヒアリング完了後、以下の課題起票をまとめて確認する。課題の候補はラン中の観察・Evaluator レポート・Generator 注記を元に自動で検知・提示する（PR #14 #15）。
+マージ候補のヒアリング完了後、以下の課題起票をまとめて確認する。ランの過程で検知した改善候補を提示する（PR #14 #15）。
 
 - **対象リポジトリへの課題起票** — 対象リポジトリで改善すべき課題を検知した場合、`multiSelect=true` 形式で提示し、選択された課題を `gh issue create --repo <owner/repo>` で登録する。
 - **Trinity 本体への課題起票** — Trinity 自体で改善すべき課題を検知した場合、同様に提示し、選択された課題を `gh issue create --repo yjn279/trinity` で登録する。
 
 ### クリーンアップ許可
 
-クリーンアップ許可は、課題起票の確認とは独立した1問として必ず単独で提示する。他の確認と同一の `AskUserQuestion` コールにまとめず、誤承認を防ぐ設計とする（PR #73）。
+課題起票とクリーンアップの確認は、1回の `AskUserQuestion` コールで最大4問としてまとめて行う。クリーンアップは独立した1問として同一コール内に含める（PR #73）。
 
 ユーザーから明示的な許可を受けたら、`git-flow` スキルに従い各環境（ブランチ・worktree）をクリーンアップし、`.trinity/` 内の該当フォルダを削除する。
 
@@ -176,7 +181,7 @@ Trinity はユーザー（開発者）に対して以下の不変条件を保証
 
 ### worktree 隔離
 
-Trinity はユーザーの現在のチェックアウト（作業ブランチ）に一切触れない。すべての実装作業は専用の隔離 worktree 内でのみ行い、ユーザーの手元にある `git checkout` の状態を変更しない。Orchestrator・Generator・Evaluator の全アクターが `git -C "${WORKTREE_DIR}" <cmd>` 形式で操作することによりこれを構造的に強制する（PR #43）。
+Trinity はユーザーの現在のチェックアウト（作業ブランチ）に一切触れない。すべての実装作業は専用の隔離 worktree 内でのみ行い、ユーザーの手元にある `git checkout` の状態を変更しない。Generator と Evaluator は `git -C "${WORKTREE_DIR}" <cmd>` 形式で git 操作を行い、Orchestrator はコードの読み書きを行わず Generator に委譲する。この役割分担によって worktree 隔離を構造的に強制する（PR #43）。
 
 ### Evaluator の独立性
 
