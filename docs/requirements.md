@@ -70,3 +70,43 @@ Trinity を動かすには、以下のスキルおよびコマンドが導入済
 ### 未導入時の自動セットアップ
 
 上記のスキル・コマンドが未導入の場合、Trinity は `/trinity:run` の起動を暗黙の許可とみなし、確認なしで自動セットアップを実施する（`~/.claude` への変更を含む）（PR #73）。
+
+## 処理フローと判定
+
+### 処理単位
+
+Trinity は処理を4つの粒度で扱う（詳細は [README.md の Processing Units 節](../README.md#processing-units) を参照）。PR #66 で用語を統一し、PR #55 で可視化した。
+
+| 粒度 | 説明 |
+| :-- | :-- |
+| セッション | `/trinity:run` の起動から PR 作成・課題起票・クリーンアップまでのコマンド1回の実行全体。複数のパイプラインを束ねる最上位の単位 |
+| パイプライン | 1つの worktree で実行される処理系列。ループを反復して1つの PR を作成するまでの流れ |
+| ループ | パイプライン内で繰り返される `Plan → Generator → Evaluator → /code-review` の1周 |
+| タスク | 各 Generator が実施する1コミット単位の実装。独立して動作し単独で検証可能な最小実装単位 |
+
+### ループの構成
+
+各ループは `Plan → Generator → Evaluator → /code-review` の順で構成される。Generator は複数のタスクを順に実施し、最終タスクのコミット後に Evaluator が評価を行う。Evaluator の判定と code-review の結果をもとに、Orchestrator が次の動作を決定する。
+
+### Evaluator の3値判定
+
+Evaluator は `PASS` / `NEEDS_REVISION` / `FAIL` の3値で判定を返す（PR #37）。
+
+| 判定 | 後続 |
+| :-- | :-- |
+| `PASS` | ループ脱出条件を確認し、満たしていれば PR 作成へ進む |
+| `NEEDS_REVISION` | Planner が次周回で `plan.md` を上書きして再計画する |
+| `FAIL` | Generator が既存計画の範囲内で修正する |
+
+### ループ脱出条件
+
+ループを脱出して PR 作成へ進むには、以下の2条件を両方満たす必要がある（PR #68）。
+
+1. Evaluator の判定が `PASS` である
+2. `/code-review` の出力に must-fix（残存 finding）がない
+
+どちらか一方でも満たしていない場合はループを継続する。
+
+### 2ループ連続 must-fix による再計画
+
+Evaluator が `PASS` を返しても must-fix が残った状態が2ループ連続した場合、Orchestrator は計画側の問題とみなし `NEEDS_REVISION` と同様に Planner へ戻して再計画を行う（PR #68）。これは実装の修正だけでは解消できない指摘が繰り返される状況での無限ループを防ぐためである。
