@@ -21,11 +21,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | アクター | モデル | ツール | 責務 |
 | :-- | :-- | :-- | :-- |
 | Orchestrator | メイン会話 | — | 環境構築・各段の直列起動・PR 作成・確認・クリーンアップ |
-| Planner | opus | 読み書き可 | 要件を `plan.md` に展開しタスクに分割する |
+| Planner | opus | Read, Write, Edit, Glob, Grep | 要件を `plan.md` に展開しタスクに分割する |
 | Generator | sonnet | 読み書き可 | 割り当てタスクを worktree 内で実装し1コミットする |
 | Evaluator | sonnet | 読み取り専用 | コミットを独立評価し判定を書く |
 
-frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。
+frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、Planner が Bash を持たないのは git 変更操作を構造的に不能にするためであり、Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するためである。
 
 サブエージェントは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。この間接化が Evaluator の独立性を構造的に強制する。Orchestrator は段と段のあいだでコードを読み書きせず、 `RUN_DIR` ・ `WORKTREE_DIR` ・ `BRANCH` のパスとコミット SHA だけを渡す。通信の経路を以下に示す。
 
