@@ -101,7 +101,7 @@ Evaluator は `PASS` / `NEEDS_REVISION` / `FAIL` の3値で判定を返す（PR 
 
 ### 設計分岐確認フロー
 
-Planner が `plan.md` 冒頭に `## 要確認の論点`（論点・選択肢・推奨の形）を書いた場合、Orchestrator はそのセクションをユーザーへ提示する。ユーザーの回答を受けてから Planner を再起動し、再計画の要否は Planner が判断する。再起動された Planner は解決済みの論点を再掲しない。
+Planner が `plan.md` 冒頭に `## 要確認の論点`（論点・選択肢・推奨の形）を書いた場合、Orchestrator はそのセクションを `AskUserQuestion` でユーザーへ提示する（内容は解釈・判定せず運搬する）。ユーザーの回答を受けてから Planner を再起動し、再計画の要否は Planner が判断する。再起動された Planner は解決済みの論点を再掲しない。
 
 ### ループ脱出条件
 
