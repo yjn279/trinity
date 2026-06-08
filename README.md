@@ -119,5 +119,6 @@ Trinity を動かすには、以下のスキル／コマンドが必要である
 
 ## 参考資料
 
+- [`docs/requirements.md`](docs/requirements.md) — ユーザー要求粒度の仕様（Trinity が何を入力でき・何が起き・何を返すかの外形的な振る舞い契約）
 - Anthropic「Harness design for long-running apps」 https://www.anthropic.com/engineering/harness-design-long-running-apps
 - Qiita「@nogataka 氏の解説記事」 https://qiita.com/nogataka/items/efe8eb9df612d2211221
