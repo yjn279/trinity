@@ -96,7 +96,7 @@ PR のマージ条件を以下に示す。すべて満たした PR を squash me
     gh label create "status: ready" --color 0E8A16 --description "トリアージ済み。自律運転が着手できる"
     gh label create "status: in-progress" --color FBCA04 --description "パイプラインが実装中"
     gh label create "status: blocked" --color B60205 --description "人間の判断待ち。自律運転の対象外"
-    gh label create "priority: high" --color D93F0B --description "壊れているもの・自律運転を止める課題"
+    gh label create "priority: high" --color D93F0B --description "壊れているもの・自律運転を止める/誤らせる課題"
     gh label create "priority: medium" --color FFA500 --description "軸を直接強化する機能・改善"
     gh label create "priority: low" --color C2E0C6 --description "その他の改善・整理・ドキュメント"
     ```
