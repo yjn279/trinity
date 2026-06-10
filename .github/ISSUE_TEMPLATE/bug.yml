@@ -1,0 +1,31 @@
+name: バグ報告
+description: 期待と異なる挙動を報告する
+labels: ["bug"]
+body:
+  - type: textarea
+    id: actual
+    attributes:
+      label: 事象
+      description: 何が起きたか。ログや出力があれば添える。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待される動作
+      description: 本来どうあるべきか。そのまま受け入れ基準の起点になる粒度で書く。
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 補足
+      description: 参考情報・関連 Issue など（任意）。
+    validations:
+      required: false

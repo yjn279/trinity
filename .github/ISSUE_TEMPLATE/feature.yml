@@ -1,0 +1,28 @@
+name: 機能要望
+description: 機能の追加・改善を提案する
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 目的
+      description: なぜこの変更が必要か。プロダクトの軸（docs/product.md）との関係がわかるように書く。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: 受け入れ基準
+      description: 何をもって完了とするか。PASS/FAIL で検証可能な粒度の箇条書きで書く。
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 補足
+      description: 参考情報・代替案・関連 Issue など（任意）。
+    validations:
+      required: false

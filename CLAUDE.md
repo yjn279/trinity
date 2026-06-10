@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 これはアプリケーションではなく Claude Code プラグインである。実体はマークダウンのプロンプト定義であり、ビルド・Lint・テストのツールチェーンを持たない。 `package.json` も依存関係もない。 `settings.json` は意図的にスキーマ宣言だけを置き、ツールの事前承認は利用側の `~/.claude/` ユーザー設定に委ねる。
 
-構成は、3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）と、それらを駆動するオーケストレーター（ `commands/run.md` ）である。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Planner → Generator → Evaluator が直列に回り、Evaluator が Production-Ready を承認するまで反復する。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
+構成は、3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）と、それらを駆動するオーケストレーター（ `commands/run.md` ）、および開発標準プロセスを1サイクル進める自律運転コマンド（ `commands/auto.md` ）である。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Planner → Generator → Evaluator が直列に回り、Evaluator が Production-Ready を承認するまで反復する。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
+
+プロダクトの軸は `docs/product.md` に、Issue 起票からリリースまでの開発標準プロセスは `docs/process.md` に言語化されている。トリアージ・設計分岐・自動起票の採否はこの2文書を単一の正として照合する。
 
 ## 変更の検証方法
 
@@ -48,6 +50,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 成果物の置き場所 | `plan.md` ・ `eval-*.md` ・ `gen-*.md` 等のラン成果物は対象プロジェクト側の `.trinity/<run>/` に出る。worktree は `.trinity/` の外に出る（配置規約は git-flow スキルに従う）。このリポジトリではない。 |
 | ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・各ランの `plan.md`・退避した過去ループの `plan-*.md`・`eval-*.md`・`gen-*.md`・`code-review-*.md`）はデバッグのためクリーンアップで削除しない。 |
 | 3値判定 | Evaluator は `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。 |
+| 軸文書の専権 | `docs/product.md` の変更は人間だけが行う。自律運転（ `/trinity:auto` ）は変更を提案する Issue の起票までとする。 |
 
 ## 編集時の規約
 
