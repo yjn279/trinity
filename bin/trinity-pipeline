@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# bin/trinity-pipeline — 1つの Issue（= 1 worktree）の収束ループ。
+#
+# Plan → Generator → 道具 → Evaluator を Production-Ready まで反復する制御フローを
+# シェルへ機械化したもの。フォアグラウンドの Orchestrator はこれをバックグラウンドで
+# 起動し、RUN_DIR/status と RUN_DIR/ask/ だけを監視する。内側ループの文脈は
+# Orchestrator に溜まらない。
+#
+# 使い方: trinity-pipeline <RUN_DIR> <WORKTREE_DIR> <BRANCH>
+#   RUN_DIR/requirement.md に要件が置かれている前提。
+#
+# 状態は RUN_DIR/status に1語で出力する（lib/actors.sh の trinity::status を参照）。
+# 設計分岐の確認が要るときは RUN_DIR/ask/q を書いて needs-input で待ち、
+# Orchestrator が RUN_DIR/ask/a に回答を書くまでブロックする。
+
+set -euo pipefail
+
+TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export TRINITY_ROOT
+
+RUN_DIR="${1:?usage: trinity-pipeline <RUN_DIR> <WORKTREE_DIR> <BRANCH>}"
+WORKTREE_DIR="${2:?WORKTREE_DIR required}"
+BRANCH="${3:?BRANCH required}"
+export RUN_DIR WORKTREE_DIR BRANCH
+
+mkdir -p "${RUN_DIR}/ask"
+# shellcheck source=lib/actors.sh
+. "${TRINITY_ROOT}/lib/actors.sh"
+
+: "${TRINITY_MAX_LOOPS:=5}"
+: "${TRINITY_ASK_TIMEOUT:=1800}"   # 確認待ちの上限（秒）
+
+# trinity::ask LOOP — 要確認の論点を ask/q に出し、Orchestrator の回答（ask/a）を待つ。
+# AskUserQuestion を呼べるのはフォアグラウンドの Orchestrator ただ一人という不変条件を守る。
+trinity::ask() {
+  local loop="$1" waited=0
+  awk '/^## 要確認の論点/{p=1;print;next} p&&/^## /{p=0} p' \
+    "${RUN_DIR}/plan.md" > "${RUN_DIR}/ask/q"
+  rm -f "${RUN_DIR}/ask/a"
+  trinity::status needs-input
+  trinity::log "ループ ${loop}: 確認待ち（ask/q を Orchestrator が拾う）"
+  while [ ! -f "${RUN_DIR}/ask/a" ]; do
+    sleep 5
+    waited=$((waited + 5))
+    if [ "${waited}" -ge "${TRINITY_ASK_TIMEOUT}" ]; then
+      trinity::log "確認待ちがタイムアウトした"
+      trinity::status error
+      exit 1
+    fi
+  done
+  { printf '\n## 確定事項（ループ %s で確認済み）\n' "${loop}"; cat "${RUN_DIR}/ask/a"; } \
+    >> "${RUN_DIR}/requirement.md"
+  rm -f "${RUN_DIR}/ask/q" "${RUN_DIR}/ask/a"
+}
+
+trinity::log "pipeline 開始: ${BRANCH}"
+
+loop=1
+mode=plan
+while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
+  if [ "${mode}" = plan ]; then
+    if trinity::plan "${loop}"; then
+      :
+    else
+      rc=$?
+      if [ "${rc}" -eq 10 ]; then
+        trinity::ask "${loop}"
+        continue   # 同じループ番号で再計画する
+      fi
+      exit 1
+    fi
+    trinity::generate "${loop}"
+  else
+    trinity::revise "${loop}"
+  fi
+
+  trinity::tools "${loop}"
+
+  # 判定の戻り値を set -e 安全に拾う（`if … fi` 後の $? は if 文自体の status になるため使わない）。
+  rc=0
+  trinity::evaluate "${loop}" || rc=$?
+  case "${rc}" in
+    0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; exit 0 ;;
+    2) mode=plan ;;    # NEEDS_REVISION → 再計画
+    3) mode=revise ;;  # FAIL → 既存計画の範囲内で修正
+    *) exit 1 ;;       # 信号を読めない等は異常終了
+  esac
+  loop=$((loop + 1))
+done
+
+trinity::status failed
+trinity::log "${TRINITY_MAX_LOOPS} ループで PASS に到達しなかった"
+exit 2

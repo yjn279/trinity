@@ -5,96 +5,97 @@ argument-hint: "<issue number(s) or a short requirement>"
 
 # Trinity
 
-TrinityはAIエージェントがProduction-Readyの品質水準を満たす、かつ長時間の業務を実行するために設計されたハーネスです。
+Trinity は、AIエージェントが Production-Ready の品質水準を満たしながら長時間の業務を遂行するためのハーネスです。
 
 ## Overview
 
-Trinityは、Planner・Generator・Evaluatorの3つのサブエージェントとそのオーケストレーターにより構成されます。Plannerの作業計画に基づき、Production-Readyな品質水準を満たすまでGenerator/EvaluatorがGANのように相互作用することで、品質の高い業務を遂行可能です。
+Trinity は Planner・Generator・Evaluator の3サブエージェントと、それを束ねる Orchestrator で構成されます。Plannerの計画に沿って Generator が実装し、Evaluator が妥協なく評価する——この敵対的な往復が、機械には下せない品質（要件適合・デザインの美・コードの美・要件妥当性）を生みます。
 
-- Planner：ユーザーの要望を作業計画に展開する。
-- Generator：Plannerが作成した計画に沿って業務を実施する。
-- Evaluator：Generatorが実施した業務が品質を満たすか判断する。
+機械が下せる8割（実行検証・差分レビュー・整理）は、Evaluator の道具として組み込みコマンド `/verify`・`/run`・`/code-review --fix`・`/simplify` に委ねます。Evaluator はその上で、削れない2割の判断にだけ希少な判断力を注ぎます。
+
+- Planner：要件を受け入れ基準付きの計画に展開する（Issue ごとに存在）。
+- Generator：計画のタスクを worktree 内で実装し、1コミットする。
+- Evaluator：コミットを独立・読み取り専用で評価し、3値判定を下す。
+
+あなた（Orchestrator）はメイン会話のフォアグラウンドにいます。**コードには一切触れません。** あなたの仕事は、自由形式の要件を解釈してユーザーと対話し、Issue ごとの収束ループを背景パイプラインへ dispatch して監視することです。内側ループの制御フローはシェルへ機械化されており（`bin/trinity-pipeline`）、あなたの文脈には溜まりません。
+
+| 機構 | 実体 | 役割 |
+| :-- | :-- | :-- |
+| `bin/trinity-pipeline` | シェル | 1 Issue の `Plan → Generator → 道具 → Evaluator` 収束ループ。背景で走る |
+| `bin/trinity-fanout` | シェル | `backlog.tsv` を読み、起動可能な Issue のパイプラインを背景起動する |
+| `bin/trinity-wait` | シェル | 手当てが要るイベント（確認待ち・起動可能・完了）までブロックして待つ |
+
+ハーネスのスクリプトは `${CLAUDE_PLUGIN_ROOT}/bin/` にあります。
 
 ## Instructions
 
-1. 対象の識別と環境構築
+### 1. 要件の受領と精緻化
 
-    要件を受け取る。Issue 番号が指定された場合は対象 Issue 群を識別し、変更同士が互いに影響するかを判断して環境を整備する。互いに影響しない変更は並列、影響する変更は直列で実装する。いずれも変更ごとに `git-flow` スキルに従って固有の環境（ブランチ・worktree・`RUN_DIR`）を整備し、各 Issue は独立した PR として残す。既に作業環境が構築済みの場合はそれを再利用する。
+要件を受け取る（Issue 番号でも自由形式の文でもよい）。設計が分岐するほどの曖昧さがあれば、fan-out の前にここで `AskUserQuestion` を使って詰める。あなたはフォアグラウンドにいるので `AskUserQuestion` をネイティブに呼べる。要件レベルの曖昧さをここで解消しておくほど、背景の Planner が確認に戻る必要が減る。
 
-2. ループの実行：サブエージェントを直列かつ同期的に呼び、作業を実行する。途中から再開する場合は、`RUN_DIR` 内の成果物で到達点を判定する。**`code-review-<n>.md` が存在する最大の `n` を完了済みの最新ループとみなし、その次のループから再開する。**
+### 2. 分解と環境構築
 
-    - `gen-<n>-task-*.md` はあるが `eval-<n>.md` が無いループ → Evaluator（サブ手順3）から続ける。
-    - `eval-<n>.md` はあるが `code-review-<n>.md` が無いループ → code-review（サブ手順4）から続ける。
-    - `code-review-<n>.md` が存在するループ → 完了済み。次のループへ進む。
+要件を独立した Issue 群に分解する。各 Issue について `git-flow` スキルに従ってブランチと worktree を切り出し、`RUN_DIR`（`.trinity/<session>/<slug>/`）を作って `requirement.md`（要件と確定事項）を書き込む。`SESSION_DIR`（`.trinity/<session>/`）に `backlog.tsv` を書く。タブ区切りで1行=1 Issue:
 
-    1. Planner
-    2. Generator（複数タスク）:
-        - Generator はタスクごとに新規起動する。タスクの実装が完了したら次のタスク用の Generator を新たに起動する。
-        - Generator が検証失敗を自力で解決できずコミットを作らずに停止して報告した場合は、Evaluator へは進まない。その停止報告をもって手順3の判定表「Generator 停止（コミットなし）」の行に従って処理する。
-        - すべてのタスクが完了したら、次のコマンドでループ内の最終コミット SHA を取得し Evaluator に渡す。
+```text
+slug<TAB>deps<TAB>worktree<TAB>branch<TAB>title
+```
 
-            ```bash
-            LAST_SHA=$(git -C "$WORKTREE_DIR" rev-parse HEAD)
-            ```
+- 互いに影響しない変更は `deps` を `-` にし、並列に処理する。
+- 影響する変更は `deps` に先行 Issue の slug を入れて直列にする。直列の後続は依存が PASS してから worktree を作るため、初期は `worktree` を `-` にしておく。
 
-    3. Evaluator
-    4. code-review: Orchestrator（メイン会話）が子プロセスとして Claude をヘッドレス起動し `/code-review` を実行させる。レビュー範囲は `<merge-base>..HEAD`。
+既に作業環境が構築済みの場合はそれを再利用する。
 
-        ```bash
-        BASE=$(git -C "${WORKTREE_DIR}" merge-base HEAD origin/main)
-        ( cd "${WORKTREE_DIR}" \
-          && env -u CLAUDECODE claude -p "/code-review ${BASE}..HEAD" --permission-mode bypassPermissions ) \
-          > "${RUN_DIR}/code-review-${n}.md"
-        ```
+### 3. fan-out（背景起動）
 
-        非ゼロ終了・空出力・期待形式不一致はレビュー未実施として扱い再試行する。
+`backlog.tsv` を fanout に渡し、起動可能なパイプラインを背景で立てる。
 
-    Trinityのオーケストレーターはコードに触れてはいけない。コードの変更は必ずGeneratorに移譲する。
+```bash
+"${CLAUDE_PLUGIN_ROOT}/bin/trinity-fanout" "${SESSION_DIR}/backlog.tsv"
+```
 
-    設計分岐の確認と Planner 再起動: Planner が `plan.md` 冒頭に `## 要確認の論点`（論点・選択肢・推奨の形）を書いた場合、Orchestrator はそのセクションを `AskUserQuestion` でユーザーへ提示する（内容は解釈・判定せず運搬する）。確認後、ユーザーの回答を入力に明示して Planner を必ず再起動する。再計画の要否は Planner が判断する。再起動された Planner は解決済みの論点を `## 要確認の論点` に再掲しない。
+### 4. 監視（dispatch + 監視）
 
-3. 次回ループの実行判断：Evaluator の評価・code-review の結果・Generator の停止報告により、以下の表に従って後続対応を判断、実行する。must-fix とは `/code-review` の出力に残った finding すべてを指す。Orchestrator は `code-review-<n>.md` の `### Code review` セクションに finding が1件以上あれば must-fix あり、「No issues found.」であれば must-fix なしと判定する。完了は Evaluator が PASS かつ must-fix なしの場合のみ。
+`trinity-wait` を呼び、手当てが要るイベントが起きるまでブロックして待つ。返ってきた `EVENT:` 行に従って対応し、`done` か `timeout` まで繰り返す。
 
-    | 判定 | 動作 |
-    | --- | --- |
-    | Evaluator `PASS` かつ must-fix なし | ループ脱出。次の手順へ進む。 |
-    | Evaluator `PASS` かつ must-fix あり | 続行。Generator が既存計画の範囲内で修正し、Evaluator 評価と code-review を再度回す。**2ループ連続で must-fix が残った場合**（指摘の同一性を問わず）は計画側の問題とみなし、`NEEDS_REVISION` と同様に Planner へ戻して再計画する。判定方法: 直前2ループの `code-review-<n>.md` にいずれも finding が1件以上あれば再計画トリガとする。 |
-    | Evaluator `NEEDS_REVISION` | 続行。Planner は次周回で `plan.md` を上書きする。 |
-    | Evaluator `FAIL` | 続行。Generator は修正作業を実施する。 |
-    | Generator 停止（コミットなし） | Evaluator へは進まない。その停止報告を持って Planner を再計画（`NEEDS_REVISION` と同様）に回す。タスクを既存計画の範囲内で完了できないのは計画または方針側の問題とみなすためである。 |
+```bash
+"${CLAUDE_PLUGIN_ROOT}/bin/trinity-wait" "${SESSION_DIR}"
+```
 
-4. Pull Requestの作成
+| EVENT | 対応 |
+| :-- | :-- |
+| `needs-input` | `ISSUE:` 行の各 slug について `<RUN_DIR>/ask/q`（Planner の `## 要確認の論点`）を読み、`AskUserQuestion` でユーザーに提示する。内容は解釈・判定せず運搬する。回答を `<RUN_DIR>/ask/a` に書く——パイプラインのブロックが解け、Planner が確定事項を反映して再計画する。複数あれば Issue ごとに直列で問う。`AskUserQuestion` を呼ぶのは常にあなた一人。 |
+| `unblocked` | `ISSUE:` 行の各 slug は依存が満たされ起動可能。`git-flow` で worktree を用意し（直列の後続）、`backlog.tsv` の `worktree` 列を埋め、手順3の fanout を再実行する。 |
+| `done` | 全 Issue が終端（passed/failed/error）。手順5へ。 |
+| `timeout` | 監視が上限に達した。`STATUS` 表を共有し、ユーザーに継続可否を確認する。 |
 
-    `git-flow` スキルに従い、Issue ごとに独立した PR を作成する。既存の PR がある場合はそこに追加で Push して変更点をコメントとして記載する。PR タイトルは `gh pr create --title` で渡し、本文は以下の見出し構成とする。
+`<RUN_DIR>/status` が `passed` の Issue は PR 作成へ進める。`failed`（ループ上限で未到達）・`error` の Issue は、`eval-*.md`・`pipeline.out` を読んで原因をユーザーに報告する。あなたはコードを直さない。
 
-    ```markdown
-    ## 目的
+### 5. Pull Request の作成
 
-    ## 実装内容
+`passed` の Issue ごとに `git-flow` スキルに従って独立した PR を作成する（マージはしない）。既存 PR があれば追加 Push し変更点をコメントする。タイトルは Conventional Commits 接頭辞付きの日本語命令形。本文は次の見出し構成にする。
 
-    ## 変更点サマリ
-    ```
+```markdown
+## 目的
 
-5. 修正判断のヒアリング
+## 実装内容
 
-    PR の URL をユーザーへ共有し、`AskUserQuestion` で修正判断を仰ぐ。修正が必要な場合は手順2以降に従って修正を実行し、不要な場合は手順6に進む。
+## 変更点サマリ
+```
 
-6. 対象リポジトリの課題起票
+### 6. 修正判断のヒアリング
 
-    ユーザーからの要望があった場合、もしくは**対象リポジトリ**で改善すべき課題を見つけた場合は、`AskUserQuestion` で起票を提案する。課題は `multiSelect=true` 形式で提示し、ユーザーが選択した課題を以下の `gh` コマンドで登録する。
+PR の URL を共有し、`AskUserQuestion` で修正要否を仰ぐ。必要なら該当 Issue の `requirement.md` を更新して手順3から回し直す。不要なら次へ。
 
-    ```bash
-    gh issue create --repo <owner/repo> --title "<title>" --body "<body>"
-    ```
+### 7. 課題起票
 
-7. Trinityの課題起票
+ユーザーの要望、または改善すべき課題を見つけた場合、`AskUserQuestion`（`multiSelect=true`）で起票を提案し、選ばれた課題を登録する。対象リポジトリと Trinity 本体で宛先を分ける。
 
-    ユーザーからの要望があった場合、もしくはTrinity自体が改善すべき課題を見つけた場合は、`AskUserQuestion` で起票を提案する。課題は `multiSelect=true` 形式で提示し、ユーザーが選択した課題を以下の `gh` コマンドで登録する。
+```bash
+gh issue create --repo <owner/repo> --title "<title>" --body "<body>"
+gh issue create --repo yjn279/trinity --title "<title>" --body "<body>"
+```
 
-    ```bash
-    gh issue create --repo yjn279/trinity --title "<title>" --body "<body>"
-    ```
+### 8. クリーンアップ
 
-8. クリーンアップ
-
-    ユーザーから明示的な許可を受けたら、`git-flow` スキルに従い各環境（ブランチ・worktree）をクリーンアップし、対応する Issue をクローズする。また、`.trinity/` にある該当フォルダは削除する。
+ユーザーから明示的な許可を受けたら、`git-flow` スキルに従い各環境（ブランチ・worktree）をクリーンアップし、対応する Issue をクローズする。`.trinity/<session>/` の該当フォルダも削除する。

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# bin/trinity-fanout — backlog.tsv を読み、起動可能なパイプラインをバックグラウンドで立てる。
+#
+# fan-out の前段（自由形式の要件を解釈して何を Issue にするか決める）は機械化できないため
+# Orchestrator（フォアグラウンドの LLM）が担い、その結果を backlog.tsv 一枚に落とす。
+# 後段（worktree ごとにパイプラインを起動する）だけをこのスクリプトが機械化する。
+# 受け渡し境界は backlog.tsv のみ。
+#
+# 使い方: trinity-fanout <backlog.tsv>
+#
+# backlog.tsv はタブ区切りで1行=1 Issue:
+#   slug <TAB> deps <TAB> worktree <TAB> branch <TAB> title
+#     slug:     Issue の識別子（RUN_DIR 名にもなる）
+#     deps:     依存する slug のカンマ区切り。無ければ "-"
+#     worktree: worktree の絶対パス。未作成なら "-"（Orchestrator が git-flow で作って埋める）
+#     branch:   作業ブランチ名
+#     title:    短い要約
+#
+# 依存が満たされ worktree が用意できた Issue だけを起動する。直列の後続 Issue は
+# 依存の PASS 後に Orchestrator が worktree を作り、本スクリプトを再実行して起動する。
+
+set -euo pipefail
+
+TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BACKLOG="${1:?usage: trinity-fanout <backlog.tsv>}"
+SESSION_DIR="$(cd "$(dirname "${BACKLOG}")" && pwd)"
+
+: "${TRINITY_MAX_PARALLEL:=3}"
+
+status_of() { cat "${SESSION_DIR}/$1/status" 2>/dev/null || echo "-"; }
+
+# 稼働中（終端状態でない）パイプラインの数を数える。
+running_count() {
+  local n=0 s d
+  for d in "${SESSION_DIR}"/*/; do
+    [ -f "${d}status" ] || continue
+    s="$(cat "${d}status" 2>/dev/null || echo)"
+    case "${s}" in
+      passed | failed | needs-revision | error | "") ;;
+      *) n=$((n + 1)) ;;
+    esac
+  done
+  echo "${n}"
+}
+
+launched=0
+while IFS=$'\t' read -r slug deps worktree branch title; do
+  [ -z "${slug}" ] && continue
+  [ "${slug}" = "slug" ] && continue          # ヘッダ行を飛ばす
+  [ "${worktree}" = "-" ] && continue          # worktree 未作成
+  [ -f "${SESSION_DIR}/${slug}/status" ] && continue   # 起動済み
+
+  ready=1
+  if [ "${deps}" != "-" ]; then
+    IFS=',' read -ra dep_list <<< "${deps}"
+    for d in "${dep_list[@]}"; do
+      [ "$(status_of "${d}")" = passed ] || ready=0
+    done
+  fi
+  [ "${ready}" = 1 ] || continue
+
+  if [ "$(running_count)" -ge "${TRINITY_MAX_PARALLEL}" ]; then
+    printf 'fanout: 並列上限 %s に到達。残りは次回再実行で起動する。\n' "${TRINITY_MAX_PARALLEL}"
+    break
+  fi
+
+  run_dir="${SESSION_DIR}/${slug}"
+  mkdir -p "${run_dir}"
+  printf 'queued\n' > "${run_dir}/status"   # 起動直後の監視レースを防ぐ初期状態
+  printf 'launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}"
+  nohup "${TRINITY_ROOT}/bin/trinity-pipeline" "${run_dir}" "${worktree}" "${branch}" \
+    >> "${run_dir}/pipeline.out" 2>&1 &
+  echo $! > "${run_dir}/pid"
+  launched=$((launched + 1))
+done < "${BACKLOG}"
+
+printf 'fanout: %d 本のパイプラインを起動した\n' "${launched}"
