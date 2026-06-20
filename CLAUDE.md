@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 これはアプリケーションではなく Claude Code プラグインである。実体はマークダウンのプロンプト定義と、それを駆動するシェルのハーネスである。`package.json` も依存関係もない。 `settings.json` は意図的にスキーマ宣言だけを置き、ツールの事前承認は利用側の `~/.claude/` ユーザー設定に委ねる。
 
-構成は3層である。3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）、それを `claude -p` の子プロセスとして起動するシェルのハーネス（ `bin/trinity-pipeline` ・ `bin/trinity-fanout` ・ `bin/trinity-wait` ・ `lib/actors.sh` ）、そしてフォアグラウンドのオーケストレーター（ `commands/run.md` ）。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Orchestrator が Issue 群を `backlog.tsv` に落とし、Issue ごとの背景パイプラインが `Plan → Generator → 道具 → Evaluator` を Production-Ready まで反復する。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
+構成は3層である。3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）、それを `claude -p` の子プロセスとして起動するシェルのハーネス（ `bin/trinity`・`lib/actors.sh` ）、そしてフォアグラウンドのオーケストレーター（ `commands/run.md` ）。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Orchestrator が Issue 群を `backlog.tsv` に落とし、Issue ごとの背景パイプラインが `Plan → Generator → 道具 → Evaluator` を Production-Ready まで反復する。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
 
 ## 変更の検証方法
 
@@ -25,13 +25,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。
 
-機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity-pipeline` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。
+機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。
 
 アクターは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。`claude -p` の別プロセス境界がこの間接化を強制し、Evaluator の独立性を担保する。Orchestrator は段と段のあいだでコードを読み書きせず、`backlog.tsv` と `status`・`ask/` のファイルだけを介して背景パイプラインと通信する。通信の経路を以下に示す。
 
 | 出力者 | 成果物 | 読む側 |
 | :-- | :-- | :-- |
-| Orchestrator | `${SESSION_DIR}/backlog.tsv`（Issue 群と worktree・依存） | `trinity-fanout`・`trinity-wait` |
+| Orchestrator | `${SESSION_DIR}/backlog.tsv`（Issue 群と worktree・依存） | `bin/trinity supervise` |
 | Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
 | Generator | worktree 内の1コミット(SHA)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |

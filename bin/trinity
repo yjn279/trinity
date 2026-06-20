@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# bin/trinity — Trinity シェルハーネス唯一の実行ファイル。
+#
+# サブコマンド:
+#   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
+#       Plan → Generate → 道具 → Evaluate を TRINITY_MAX_LOOPS 回（既定 5）反復する。
+#       確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
+#   supervise <SESSION_DIR>
+#       backlog.tsv を読み、起動可能な Issue を TRINITY_MAX_PARALLEL（既定 3）の範囲で
+#       背景起動し、手当てが要るイベントまでブロックして STATUS 表と EVENT: を返す。
+#
+# 環境変数: TRINITY_DRY_RUN / TRINITY_MAX_LOOPS / TRINITY_ASK_TIMEOUT /
+#            TRINITY_MAX_PARALLEL / TRINITY_WAIT_TIMEOUT
+
+set -euo pipefail
+
+TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export TRINITY_ROOT
+
+trinity::usage() {
+  [ -n "${1:-}" ] && printf 'trinity: %s\n' "$1" >&2
+  printf '使い方:\n  trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>\n  trinity supervise <SESSION_DIR>\n' >&2
+  exit 1
+}
+
+SUBCOMMAND="${1:-}"
+case "${SUBCOMMAND}" in
+  loop | supervise) shift ;;
+  "") trinity::usage "サブコマンドが必要です" ;;
+  *)  trinity::usage "未知のサブコマンド: ${SUBCOMMAND}" ;;
+esac
+
+# --- loop — 1 Issue の収束ループ -------------------------------------------
+loop_main() {
+  local RUN_DIR WORKTREE_DIR BRANCH
+  RUN_DIR="${1:?usage: trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>}"
+  WORKTREE_DIR="${2:?WORKTREE_DIR required}"
+  BRANCH="${3:?BRANCH required}"
+  export RUN_DIR WORKTREE_DIR BRANCH
+
+  mkdir -p "${RUN_DIR}/ask"
+  # shellcheck source=lib/actors.sh
+  . "${TRINITY_ROOT}/lib/actors.sh"
+
+  : "${TRINITY_MAX_LOOPS:=5}"
+  : "${TRINITY_ASK_TIMEOUT:=1800}"
+
+  loop::ask() {
+    local loop="$1" waited=0
+    awk '/^## 要確認の論点/{p=1;print;next} p&&/^## /{p=0} p' \
+      "${RUN_DIR}/plan.md" > "${RUN_DIR}/ask/q"
+    rm -f "${RUN_DIR}/ask/a"
+    trinity::status needs-input
+    trinity::log "ループ ${loop}: 確認待ち（ask/q を Orchestrator が拾う）"
+    while [ ! -f "${RUN_DIR}/ask/a" ]; do
+      sleep 5
+      waited=$((waited + 5))
+      if [ "${waited}" -ge "${TRINITY_ASK_TIMEOUT}" ]; then
+        trinity::log "確認待ちがタイムアウトした"
+        trinity::status error
+        exit 1
+      fi
+    done
+    { printf '\n## 確定事項（ループ %s で確認済み）\n' "${loop}"; cat "${RUN_DIR}/ask/a"; } \
+      >> "${RUN_DIR}/requirement.md"
+    rm -f "${RUN_DIR}/ask/q" "${RUN_DIR}/ask/a"
+  }
+
+  trinity::log "loop 開始: ${BRANCH}"
+
+  local loop=1 mode=plan rc
+  while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
+    if [ "${mode}" = plan ]; then
+      if trinity::plan "${loop}"; then
+        :
+      else
+        rc=$?
+        if [ "${rc}" -eq 10 ]; then
+          loop::ask "${loop}"
+          continue
+        fi
+        exit 1
+      fi
+      trinity::generate "${loop}"
+    else
+      trinity::revise "${loop}"
+    fi
+
+    trinity::tools "${loop}"
+
+    rc=0
+    trinity::evaluate "${loop}" || rc=$?
+    case "${rc}" in
+      0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; exit 0 ;;
+      2) mode=plan ;;    # NEEDS_REVISION → 再計画
+      3) mode=revise ;;  # FAIL → 既存計画の範囲内で修正
+      *) exit 1 ;;
+    esac
+    loop=$((loop + 1))
+  done
+
+  trinity::status failed
+  trinity::log "${TRINITY_MAX_LOOPS} ループで PASS に到達しなかった"
+  exit 2
+}
+
+# --- supervise — 複数 Issue の起動＋監視 ------------------------------------
+supervise_main() {
+  local SESSION_DIR BACKLOG
+  SESSION_DIR="${1:?usage: trinity supervise <SESSION_DIR>}"
+  BACKLOG="${SESSION_DIR}/backlog.tsv"
+
+  : "${TRINITY_MAX_PARALLEL:=3}"
+  : "${TRINITY_WAIT_TIMEOUT:=3600}"
+  : "${TRINITY_DRY_RUN:=0}"
+
+  status_of() { cat "${SESSION_DIR}/$1/status" 2>/dev/null || echo "-"; }
+
+  # 全依存が passed なら真（0）を返す。
+  deps_satisfied() {
+    local deps="$1" dep
+    [ "${deps}" = "-" ] && return 0
+    local dep_list
+    IFS=',' read -ra dep_list <<< "${deps}"
+    for dep in "${dep_list[@]}"; do
+      [ "$(status_of "${dep}")" = passed ] || return 1
+    done
+  }
+
+  running_count() {  # queued も計上し起動直後の監視レースを防ぐ
+    local n=0 s
+    while IFS=$'\t' read -r slug _ _remainder; do
+      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
+      s="$(status_of "${slug}")"
+      case "${s}" in
+        passed | failed | error | "-" | "") ;;
+        *) n=$((n + 1)) ;;
+      esac
+    done < "${BACKLOG}"
+    printf '%s' "${n}"
+  }
+
+  print_status() {
+    printf 'STATUS\n'
+    while IFS=$'\t' read -r slug _deps _remainder; do
+      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
+      printf '  %s\t%s\n' "${slug}" "$(status_of "${slug}")"
+    done < "${BACKLOG}"
+  }
+
+  launch_ready() {
+    local launched=0 slug deps worktree branch title run_dir
+    while IFS=$'\t' read -r slug deps worktree branch title; do
+      [ -z "${slug}" ] && continue
+      [ "${slug}" = "slug" ] && continue
+      [ "${worktree}" = "-" ] && continue
+      [ -f "${SESSION_DIR}/${slug}/status" ] && continue
+      deps_satisfied "${deps}" || continue
+
+      if [ "$(running_count)" -ge "${TRINITY_MAX_PARALLEL}" ]; then
+        printf 'supervise: 並列上限 %s に到達。残りは次回再実行で起動する。\n' \
+          "${TRINITY_MAX_PARALLEL}" >&2
+        break
+      fi
+
+      run_dir="${SESSION_DIR}/${slug}"
+      mkdir -p "${run_dir}"
+      printf 'queued\n' > "${run_dir}/status"
+      printf 'supervise: launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}" >&2
+
+      if [ "${TRINITY_DRY_RUN}" = "1" ]; then
+        ( sleep 2; printf 'passed\n' > "${run_dir}/status" ) &
+      else
+        nohup "${TRINITY_ROOT}/bin/trinity" loop "${run_dir}" "${worktree}" "${branch}" \
+          >> "${run_dir}/pipeline.out" 2>&1 &
+        printf '%s\n' "$!" > "${run_dir}/pid"
+      fi
+      launched=$((launched + 1))
+    done < "${BACKLOG}"
+    printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
+  }
+
+  launch_ready
+
+  local waited=0 needs_input ready_pending local_running local_pending slug deps s
+  while :; do
+    needs_input=""
+    ready_pending=""
+    local_running=0
+    local_pending=0
+
+    while IFS=$'\t' read -r slug deps _remainder; do
+      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
+      s="$(status_of "${slug}")"
+      case "${s}" in
+        needs-input)
+          needs_input="${needs_input} ${slug}" ;;
+        passed | failed | error)
+          ;;
+        "-")
+          local_pending=$((local_pending + 1))
+          deps_satisfied "${deps}" && ready_pending="${ready_pending} ${slug}" ;;
+        *)
+          local_running=$((local_running + 1)) ;;
+      esac
+    done < "${BACKLOG}"
+
+    if [ -n "${needs_input}" ]; then
+      print_status
+      for slug in ${needs_input}; do
+        printf 'ISSUE: %s\tQ: %s/%s/ask/q\n' "${slug}" "${SESSION_DIR}" "${slug}"
+      done
+      printf 'EVENT: needs-input\n'
+      exit 0
+    fi
+
+    if [ -n "${ready_pending}" ] && [ "${local_running}" -lt "${TRINITY_MAX_PARALLEL}" ]; then
+      print_status
+      for slug in ${ready_pending}; do printf 'ISSUE: %s\n' "${slug}"; done
+      printf 'EVENT: unblocked\n'
+      exit 0
+    fi
+
+    if [ "${local_running}" -eq 0 ] && [ "${local_pending}" -eq 0 ]; then
+      print_status
+      printf 'EVENT: done\n'
+      exit 0
+    fi
+
+    sleep 5
+    waited=$((waited + 5))
+    if [ "${waited}" -ge "${TRINITY_WAIT_TIMEOUT}" ]; then
+      print_status
+      printf 'EVENT: timeout\n'
+      exit 0
+    fi
+  done
+}
+
+# --- ディスパッチ -------------------------------------------------------------
+case "${SUBCOMMAND}" in
+  loop)      loop_main "$@" ;;
+  supervise) supervise_main "$@" ;;
+esac

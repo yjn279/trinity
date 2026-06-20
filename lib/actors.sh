@@ -1,38 +1,27 @@
 #!/usr/bin/env bash
 # lib/actors.sh — Trinity のステートレスなアクター呼び出し層。
 #
-# パイプライン（bin/trinity-pipeline）から source して使う。各 LLM ステップを
-# headless な `claude -p` 子プロセスとして起動し、受け渡しはすべてファイル経由で行う。
-# これにより Evaluator の独立性（自分でコードを直せない・他者のチャット文脈を見ない）が
-# プロセス境界として構造的に強制される。
+# bin/trinity から source して使う。各 LLM ステップを headless な `claude -p` 子プロセス
+# として起動し、受け渡しはすべてファイル経由で行う。これにより Evaluator の独立性
+# （自分でコードを直せない・他者のチャット文脈を見ない）がプロセス境界として強制される。
 #
 # アクターの振る舞いの単一の正は agents/<role>.md である。本ファイルはその本文を
 # システム指示として注入し、ランタイム入力だけを差し込む。プロンプトの二重管理はしない。
 #
-# 期待される環境変数:
-#   TRINITY_ROOT            プラグインのルート（agents/ が置かれている場所）
-#   RUN_DIR                 .trinity/<slug>/ の絶対パス（成果物の置き場）
-#   WORKTREE_DIR            worktree の絶対パス（コードの置き場）
-#   BRANCH                  作業ブランチ名
-#   TRINITY_PLANNER_MODEL   既定 opus
-#   TRINITY_GENERATOR_MODEL 既定 sonnet
-#   TRINITY_EVALUATOR_MODEL 既定 sonnet
-#   TRINITY_DRY_RUN         "1" のとき claude を呼ばず制御フローだけを検証する
+# 環境変数: TRINITY_ROOT / RUN_DIR / WORKTREE_DIR / BRANCH
+#            TRINITY_{PLANNER,GENERATOR,EVALUATOR}_MODEL / TRINITY_DRY_RUN
 
 : "${TRINITY_PLANNER_MODEL:=opus}"
 : "${TRINITY_GENERATOR_MODEL:=sonnet}"
 : "${TRINITY_EVALUATOR_MODEL:=sonnet}"
 : "${TRINITY_DRY_RUN:=0}"
 
-# --- 基本ヘルパー -----------------------------------------------------------
-
-# trinity::log MSG... — RUN_DIR/trinity.log と stderr の両方へ追記する。
+# trinity::log MSG — RUN_DIR/trinity.log と stderr の両方へ追記する。
 trinity::log() {
   printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "${RUN_DIR}/trinity.log" >&2
 }
 
-# trinity::status STATE — パイプラインの現在状態を1語でファイルに記録する。
-# Orchestrator（フォアグラウンド）はこの1ファイルだけを監視すれば進捗が分かる。
+# trinity::status STATE — 状態を1語で RUN_DIR/status に記録する。
 # 取りうる値: planning generating reviewing evaluating needs-input passed needs-revision failed error
 trinity::status() {
   printf '%s\n' "$1" > "${RUN_DIR}/status"
@@ -46,7 +35,7 @@ trinity::agent_body() {
 }
 
 # trinity::claude MODEL CWD PROMPT — headless な claude を1回起動し標準出力を返す。
-# worktree を作業ディレクトリにし、ネスト起動を避けるため CLAUDECODE を外す。
+# CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可する。
 trinity::claude() {
   local model="$1" cwd="$2" prompt="$3"
   if [ "${TRINITY_DRY_RUN}" = "1" ]; then
@@ -57,7 +46,7 @@ trinity::claude() {
       --model "$model" --permission-mode bypassPermissions )
 }
 
-# trinity::base — origin/main との merge-base。diff / レビュー範囲の起点。
+# trinity::base — origin/main との merge-base（diff・レビュー範囲の起点）。
 trinity::base() {
   git -C "${WORKTREE_DIR}" merge-base HEAD origin/main 2>/dev/null \
     || git -C "${WORKTREE_DIR}" rev-list --max-parents=0 HEAD | tail -1
@@ -76,11 +65,8 @@ trinity::context() {
 EOF
 }
 
-# --- アクター ---------------------------------------------------------------
-
 # trinity::plan LOOP — Planner を起動し plan.md と tasks.tsv を生成させる。
-# plan.md 冒頭に `## 要確認の論点` があれば status を needs-input にして 10 を返す
-# （= フォアグラウンドの確認待ち。pipeline 側でブロックする）。
+# `## 要確認の論点` があれば needs-input にして 10 を返す（loop 側でブロック）。
 trinity::plan() {
   local loop="$1"
   trinity::status planning
@@ -103,8 +89,7 @@ trinity::plan() {
   return 0
 }
 
-# trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する。
-# 1タスク = 1コミット。各 Generator は固有の新鮮な文脈を持つ。
+# trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（1タスク=1コミット）。
 trinity::generate() {
   local loop="$1" idx title files prompt
   trinity::status generating
@@ -128,11 +113,10 @@ trinity::generate() {
   done < "${RUN_DIR}/tasks.tsv"
 }
 
-# trinity::revise LOOP — FAIL（計画は妥当・既存計画の範囲内で直せる）のときの修正生成。
-# 直前ループの eval を読み、新規タスクではなく修正コミットを作らせる。
+# trinity::revise LOOP — FAIL のとき計画の範囲内で修正コミットを作らせる。
 trinity::revise() {
-  local loop="$1" prompt
-  local prev=$((loop - 1))
+  local loop="$1" prev prompt
+  prev=$((loop - 1))
   trinity::status generating
   if [ "${TRINITY_DRY_RUN}" = "1" ]; then
     git -C "${WORKTREE_DIR}" commit --allow-empty -q -m "fix: dry-run revise loop ${loop}" || true
@@ -146,9 +130,7 @@ trinity::revise() {
     > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
 }
 
-# trinity::tools LOOP — 機械が下せる8割。証拠収集と自動修正を組み込みコマンドに委ねる。
-# /code-review --fix と /simplify は差分を自動修正してコミットし、/verify は挙動の証拠を残す。
-# これらは Evaluator の「道具」であり、判定そのものではない。
+# trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
 trinity::tools() {
   local loop="$1" base; base="$(trinity::base)"
   trinity::status reviewing
@@ -170,9 +152,7 @@ trinity::tools() {
     > "${RUN_DIR}/verify-${loop}.md" 2>&1 || true
 }
 
-# trinity::evaluate LOOP — Evaluator を読み取り専用で起動し eval-<n>.md を書かせる。
-# 標準出力ではなくファイル先頭の `VERDICT:` 行を信号とする。
-# 戻り値で判定を表す: 0=PASS 2=NEEDS_REVISION 3=FAIL 10=要件側の問題で要確認。
+# trinity::evaluate LOOP — Evaluator を起動し eval-<n>.md を書かせる。戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=不明。
 trinity::evaluate() {
   local loop="$1" prompt verdict
   trinity::status evaluating
