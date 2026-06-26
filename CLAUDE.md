@@ -8,6 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 構成は、3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）と、それらを駆動するオーケストレーター（ `commands/run.md` ）である。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Planner → Generator → Evaluator が直列に回り、Evaluator が Production-Ready を承認するまで反復する。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
 
+## 最良の実装は、実装しないこと
+
+足さずに済む道をまず探す。実装コストも保守コストもかけずに問題が消えるなら、それが最善である。
+
 ## 変更の検証方法
 
 自動テストはない。挙動の確認は、このプラグインを入れた別プロジェクトで実際に `/trinity:run` を回し、各 agent の出力を観察して行う。プロンプトを書き換えたら、その部品が解決していた失敗モードを再現できるか、あるいは不要になったかで評価する。
