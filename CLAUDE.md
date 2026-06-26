@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 これはアプリケーションではなく Claude Code プラグインである。実体はマークダウンのプロンプト定義と、それを駆動するシェルのハーネスである。`package.json` も依存関係もない。 `settings.json` は意図的にスキーマ宣言だけを置き、ツールの事前承認は利用側の `~/.claude/` ユーザー設定に委ねる。
 
-構成は3層である。3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）、それを `claude -p` の子プロセスとして起動するシェルのハーネス（ `bin/trinity`・`lib/actors.sh` ）、そしてフォアグラウンドのオーケストレーター（ `commands/run.md` ）。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Orchestrator が Issue 群を `backlog.tsv` に落とし、Issue ごとの背景パイプラインが `Plan → Generator → 道具 → Evaluator` を Production-Ready まで反復する。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
+構成は3層である。3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）、それを `claude -p` の子プロセスとして起動するシェルのハーネス（ `bin/trinity`・`lib/actors.sh` ）、そしてフォアグラウンドのオーケストレーター（ `commands/run.md` ）。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Orchestrator が Issue 群を `backlog.tsv` に落とし、Issue ごとの背景パイプラインが `Plan → Generator → 道具 → Evaluator` を Production-Ready まで反復する。人がつくのはタスク投入直後——方針を確定するまで——であり、確定後は無人で走り切る。auto-mode で動かす前提の実装である。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
 
 ## 変更の検証方法
 
-自動テストはない。シェルを書き換えたら最低限 `bash -n` と `shellcheck -S warning` を通し、`TRINITY_DRY_RUN=1` で `claude` を呼ばずに制御フローを流して確認する。プロンプト（agent 定義・`commands/run.md`）を書き換えたら、このプラグインを入れた別プロジェクトで実際に `/trinity:run` を回し、各アクターの出力を観察する。書き換えた部品が解決していた失敗モードを再現できるか、あるいは不要になったかで評価する。
+自動テストはない。シェルを書き換えたら最低限 `bash -n` と `shellcheck -S warning` を通す。挙動の確認は、このプラグインを入れた別プロジェクト（または使い捨ての作業ツリー）で実際に `/trinity:run` を小さな要件で回し、各アクターの出力と制御フローを観察して行う。書き換えた部品が解決していた失敗モードを再現できるか、あるいは不要になったかで評価する。
 
 ## アーキテクチャ
 
