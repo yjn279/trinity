@@ -9,12 +9,11 @@
 # システム指示として注入し、ランタイム入力だけを差し込む。プロンプトの二重管理はしない。
 #
 # 環境変数: TRINITY_ROOT / RUN_DIR / WORKTREE_DIR / BRANCH
-#            TRINITY_{PLANNER,GENERATOR,EVALUATOR}_MODEL / TRINITY_DRY_RUN
+#            TRINITY_{PLANNER,GENERATOR,EVALUATOR}_MODEL
 
 : "${TRINITY_PLANNER_MODEL:=opus}"
 : "${TRINITY_GENERATOR_MODEL:=sonnet}"
 : "${TRINITY_EVALUATOR_MODEL:=sonnet}"
-: "${TRINITY_DRY_RUN:=0}"
 
 # trinity::log MSG — RUN_DIR/trinity.log と stderr の両方へ追記する。
 trinity::log() {
@@ -38,10 +37,6 @@ trinity::agent_body() {
 # CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可する。
 trinity::claude() {
   local model="$1" cwd="$2" prompt="$3"
-  if [ "${TRINITY_DRY_RUN}" = "1" ]; then
-    printf '%s\n' "[dry-run ${model}] $(printf '%.70s' "$prompt")" >&2
-    return 0
-  fi
   ( cd "$cwd" && env -u CLAUDECODE claude -p "$prompt" \
       --model "$model" --permission-mode bypassPermissions )
 }
@@ -70,11 +65,6 @@ EOF
 trinity::plan() {
   local loop="$1"
   trinity::status planning
-  if [ "${TRINITY_DRY_RUN}" = "1" ]; then
-    printf '# plan (dry-run loop %s)\n\n## 受け入れ基準\n- 動作する\n' "$loop" > "${RUN_DIR}/plan.md"
-    printf '1\tdry-run タスク\t-\n' > "${RUN_DIR}/tasks.tsv"
-    return 0
-  fi
   local prompt
   prompt="$(trinity::agent_body planner)$(trinity::context "$loop")"
   trinity::claude "${TRINITY_PLANNER_MODEL}" "${WORKTREE_DIR}" "$prompt" \
@@ -93,12 +83,6 @@ trinity::plan() {
 trinity::generate() {
   local loop="$1" idx title files prompt
   trinity::status generating
-  if [ "${TRINITY_DRY_RUN}" = "1" ]; then
-    git -C "${WORKTREE_DIR}" commit --allow-empty -q -m "feat: dry-run loop ${loop}" || true
-    printf 'commit %s\n' "$(git -C "${WORKTREE_DIR}" rev-parse HEAD)" \
-      > "${RUN_DIR}/gen-${loop}-task-1.md"
-    return 0
-  fi
   local total; total="$(grep -c $'\t' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
   while IFS=$'\t' read -r idx title files; do
     [ -z "${idx}" ] && continue
@@ -118,12 +102,6 @@ trinity::revise() {
   local loop="$1" prev prompt
   prev=$((loop - 1))
   trinity::status generating
-  if [ "${TRINITY_DRY_RUN}" = "1" ]; then
-    git -C "${WORKTREE_DIR}" commit --allow-empty -q -m "fix: dry-run revise loop ${loop}" || true
-    printf 'commit %s\n' "$(git -C "${WORKTREE_DIR}" rev-parse HEAD)" \
-      > "${RUN_DIR}/gen-${loop}-task-1.md"
-    return 0
-  fi
   prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
 - 修正モード: ${RUN_DIR}/eval-${prev}.md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
@@ -134,10 +112,6 @@ trinity::revise() {
 trinity::tools() {
   local loop="$1" base; base="$(trinity::base)"
   trinity::status reviewing
-  if [ "${TRINITY_DRY_RUN}" = "1" ]; then
-    printf 'No issues found. (dry-run)\n' > "${RUN_DIR}/review-${loop}.md"
-    return 0
-  fi
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
     "/code-review --fix ${base}..HEAD" > "${RUN_DIR}/review-${loop}.md" 2>&1 || true
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
@@ -156,10 +130,6 @@ trinity::tools() {
 trinity::evaluate() {
   local loop="$1" prompt verdict
   trinity::status evaluating
-  if [ "${TRINITY_DRY_RUN}" = "1" ]; then
-    printf 'VERDICT: PASS\n\n# 評価 (dry-run)\n' > "${RUN_DIR}/eval-${loop}.md"
-    trinity::status passed; return 0
-  fi
   prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
 - ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
 - 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
