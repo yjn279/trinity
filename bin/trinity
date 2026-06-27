@@ -5,6 +5,7 @@
 #   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
 #       Plan → Generate → 道具 → Evaluate を TRINITY_MAX_LOOPS 回（既定 5）反復する。
 #       確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
+#       中断後の再起動では RUN_DIR の既存成果物から到達点を判定し中断点から再開する。
 #   supervise <SESSION_DIR>
 #       backlog.tsv（slug・worktree・branch・title の薄い起動リスト）を読み、
 #       Issue を TRINITY_MAX_PARALLEL（既定 3）の範囲で背景起動し、空きスロットに
@@ -68,23 +69,77 @@ loop_main() {
     rm -f "${RUN_DIR}/ask/q" "${RUN_DIR}/ask/a"
   }
 
+  # RUN_DIR の既存成果物から再開ループ番号・モード・入口を返す。
+  # 出力形式: "<n> <mode> <entrance>"（例: "2 plan B"）
+  # PASS 済みのときは "PASS" のみを返す。
+  loop::resume_point() {
+    local k=0 num="" verdict="" f
+    for f in "${RUN_DIR}"/eval-*.md; do
+      [ -f "$f" ] || continue
+      num="${f##*/eval-}"
+      num="${num%.md}"
+      case "${num}" in *[!0-9]*) continue ;; esac
+      verdict="$(grep -m1 '^VERDICT:' "$f" 2>/dev/null | awk '{print $2}')" || continue
+      case "${verdict}" in
+        PASS | NEEDS_REVISION | FAIL) ;;
+        *) continue ;;
+      esac
+      [ "${num}" -gt "${k}" ] && k="${num}"
+    done
+
+    if [ "${k}" -eq 0 ]; then
+      printf '1 plan A\n'; return
+    fi
+
+    verdict="$(grep -m1 '^VERDICT:' "${RUN_DIR}/eval-${k}.md" 2>/dev/null | awk '{print $2}')" || true
+    [ "${verdict}" = PASS ] && { printf 'PASS\n'; return; }
+
+    local n mode entrance
+    n=$((k + 1))
+    case "${verdict}" in
+      NEEDS_REVISION) mode=plan ;;
+      *)              mode=revise ;;
+    esac
+    entrance=A
+    if find "${RUN_DIR}" -maxdepth 1 -name "gen-${n}-*" 2>/dev/null | grep -q .; then
+      entrance=B
+    fi
+    printf '%s %s %s\n' "${n}" "${mode}" "${entrance}"
+  }
+
   trinity::log "loop 開始: ${BRANCH}"
 
-  local loop=1 mode=plan rc
+  local resume loop mode entrance rc skip_to_tools
+  resume="$(loop::resume_point)"
+  if [ "${resume}" = PASS ]; then
+    trinity::log "再開判定: 既に PASS 済み。再実行しない。"
+    trinity::status passed
+    exit 0
+  fi
+  read -r loop mode entrance <<< "${resume}"
+  skip_to_tools=""
+  if [ "${loop}" -gt 1 ]; then
+    trinity::log "再開: ループ ${loop} から ${mode}（入口${entrance}）で再開する"
+    [ "${entrance}" = B ] && skip_to_tools=1
+  fi
+
   while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
-    if [ "${mode}" = plan ]; then
-      if ! trinity::plan "${loop}"; then
-        rc=$?
-        if [ "${rc}" -eq 10 ]; then
-          loop::ask "${loop}"
-          continue
+    if [ -z "${skip_to_tools}" ]; then
+      if [ "${mode}" = plan ]; then
+        if ! trinity::plan "${loop}"; then
+          rc=$?
+          if [ "${rc}" -eq 10 ]; then
+            loop::ask "${loop}"
+            continue
+          fi
+          exit 1
         fi
-        exit 1
+        trinity::generate "${loop}"
+      else
+        trinity::revise "${loop}"
       fi
-      trinity::generate "${loop}"
-    else
-      trinity::revise "${loop}"
     fi
+    skip_to_tools=""
 
     trinity::tools "${loop}"
 
