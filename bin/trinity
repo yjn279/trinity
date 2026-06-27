@@ -73,7 +73,7 @@ loop_main() {
   # 出力形式: "<n> <mode> <entrance>"（例: "2 plan B"）
   # PASS 済みのときは "PASS" のみを返す。
   loop::resume_point() {
-    local k=0 num="" verdict="" f
+    local k=0 k_verdict="" num="" verdict="" f
     for f in "${RUN_DIR}"/eval-*.md; do
       [ -f "$f" ] || continue
       num="${f##*/eval-}"
@@ -84,19 +84,18 @@ loop_main() {
         PASS | NEEDS_REVISION | FAIL) ;;
         *) continue ;;
       esac
-      [ "${num}" -gt "${k}" ] && k="${num}"
+      if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
     done
 
     if [ "${k}" -eq 0 ]; then
       printf '1 plan A\n'; return
     fi
 
-    verdict="$(grep -m1 '^VERDICT:' "${RUN_DIR}/eval-${k}.md" 2>/dev/null | awk '{print $2}')" || true
-    [ "${verdict}" = PASS ] && { printf 'PASS\n'; return; }
+    [ "${k_verdict}" = PASS ] && { printf 'PASS\n'; return; }
 
     local n mode entrance
     n=$((k + 1))
-    case "${verdict}" in
+    case "${k_verdict}" in
       NEEDS_REVISION) mode=plan ;;
       *)              mode=revise ;;
     esac
