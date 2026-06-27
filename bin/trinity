@@ -79,7 +79,7 @@ loop_main() {
       num="${f##*/eval-}"
       num="${num%.md}"
       case "${num}" in *[!0-9]*) continue ;; esac
-      verdict="$(grep -m1 '^VERDICT:' "$f" 2>/dev/null | awk '{print $2}')" || continue
+      verdict="$(trinity::verdict_of "$f")"
       case "${verdict}" in
         PASS | NEEDS_REVISION | FAIL) ;;
         *) continue ;;
@@ -116,7 +116,6 @@ loop_main() {
     exit 0
   fi
   read -r loop mode entrance <<< "${resume}"
-  skip_to_tools=""
   if [ "${loop}" -gt 1 ]; then
     trinity::log "再開: ループ ${loop} から ${mode}（入口${entrance}）で再開する"
     [ "${entrance}" = B ] && skip_to_tools=1
@@ -127,7 +126,7 @@ loop_main() {
       if [ "${mode}" = plan ]; then
         if ! trinity::plan "${loop}"; then
           rc=$?
-          if [ "${rc}" -eq 10 ]; then
+          if [ "${rc}" -eq "${TRINITY_RC_NEEDS_INPUT}" ]; then
             loop::ask "${loop}"
             continue
           fi
@@ -178,7 +177,7 @@ supervise_main() {
       { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       s="$(status_of "${slug}")"
       case "${s}" in
-        passed | failed | error | "-" | "") ;;
+        passed | failed | error | "-") ;;
         *) n=$((n + 1)) ;;
       esac
     done < "${BACKLOG}"

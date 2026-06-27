@@ -15,6 +15,8 @@
 : "${TRINITY_GENERATOR_MODEL:=sonnet}"
 : "${TRINITY_EVALUATOR_MODEL:=sonnet}"
 
+readonly TRINITY_RC_NEEDS_INPUT=10
+
 # trinity::log MSG — RUN_DIR/trinity.log と stderr の両方へ追記する。
 trinity::log() {
   printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "${RUN_DIR}/trinity.log" >&2
@@ -41,6 +43,22 @@ trinity::claude() {
       --model "$model" --permission-mode bypassPermissions )
 }
 
+# trinity::verdict_of FILE — eval-*.md から VERDICT の値（PASS/NEEDS_REVISION/FAIL）を返す。
+trinity::verdict_of() {
+  awk '/^VERDICT:/{print $2; exit}' "$1" 2>/dev/null
+}
+
+# trinity::assert_commit PRE_SHA CONTEXT — コミットが作成されたか検証し、なければ error で終了。
+trinity::assert_commit() {
+  local pre_sha="$1" context="$2" post_sha
+  post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  if [ "${pre_sha}" = "${post_sha}" ]; then
+    trinity::log "${context}: Generator がコミットを作成しなかった"
+    trinity::status error
+    return 1
+  fi
+}
+
 # trinity::base — origin/main との merge-base（diff・レビュー範囲の起点）。
 trinity::base() {
   git -C "${WORKTREE_DIR}" merge-base HEAD origin/main 2>/dev/null \
@@ -65,6 +83,9 @@ EOF
 trinity::plan() {
   local loop="$1"
   trinity::status planning
+  # tasks.tsv を事前に削除して失敗時の古いファイル誤検出を防ぐ。
+  # plan.md は Planner が退避（plan-<n-1>.md）してから上書きするため残す。
+  rm -f "${RUN_DIR}/tasks.tsv"
   local prompt
   prompt="$(trinity::agent_body planner)$(trinity::context "$loop")"
   trinity::claude "${TRINITY_PLANNER_MODEL}" "${WORKTREE_DIR}" "$prompt" \
@@ -72,26 +93,28 @@ trinity::plan() {
   if [ ! -f "${RUN_DIR}/plan.md" ]; then
     trinity::status error; return 1
   fi
-  if [ ! -f "${RUN_DIR}/tasks.tsv" ]; then
-    trinity::status error; return 1
-  fi
+  # ## 要確認の論点 があるときは tasks.tsv を書かない（仕様）ため、この順で判定する。
   if grep -q '^## 要確認の論点' "${RUN_DIR}/plan.md"; then
     trinity::status needs-input
-    return 10
+    return "${TRINITY_RC_NEEDS_INPUT}"
+  fi
+  if [ ! -f "${RUN_DIR}/tasks.tsv" ]; then
+    trinity::status error; return 1
   fi
   return 0
 }
 
 # trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（1タスク=1コミット）。
 trinity::generate() {
-  local loop="$1" idx title files prompt pre_sha post_sha
+  local loop="$1" idx title files prompt pre_sha agent_body
   trinity::status generating
   pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   local total; total="$(grep -c $'\t' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
+  agent_body="$(trinity::agent_body generator)"
   while IFS=$'\t' read -r idx title files; do
     [ -z "${idx}" ] && continue
     trinity::log "generate loop ${loop} task ${idx}/${total}: ${title}"
-    prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
+    prompt="${agent_body}$(trinity::context "$loop")
 - TaskIndex: ${idx}
 - TaskTotal: ${total}
 - TaskTitle: ${title}
@@ -99,12 +122,7 @@ trinity::generate() {
     trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
       > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
   done < "${RUN_DIR}/tasks.tsv"
-  post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
-  if [ "${pre_sha}" = "${post_sha}" ]; then
-    trinity::log "generate: Generator がコミットを作成しなかった"
-    trinity::status error
-    return 1
-  fi
+  trinity::assert_commit "${pre_sha}" "generate"
 }
 
 # trinity::revise LOOP — FAIL のとき計画の範囲内で修正コミットを作らせる。
@@ -117,12 +135,7 @@ trinity::revise() {
 - 修正モード: ${RUN_DIR}/eval-${prev}.md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
-  post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
-  if [ "${pre_sha}" = "${post_sha}" ]; then
-    trinity::log "revise: Generator がコミットを作成しなかった"
-    trinity::status error
-    return 1
-  fi
+  trinity::assert_commit "${pre_sha}" "revise"
 }
 
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
@@ -152,7 +165,7 @@ trinity::evaluate() {
 - 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
   trinity::claude "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/evaluator-${loop}.out" 2>&1 || true
-  verdict="$(grep -m1 '^VERDICT:' "${RUN_DIR}/eval-${loop}.md" 2>/dev/null | awk '{print $2}')"
+  verdict="$(trinity::verdict_of "${RUN_DIR}/eval-${loop}.md")"
   case "${verdict}" in
     PASS)           trinity::status passed;        return 0 ;;
     NEEDS_REVISION) trinity::status needs-revision; return 2 ;;
