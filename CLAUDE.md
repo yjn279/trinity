@@ -8,6 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 構成は3層である。3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）、それを `claude -p` の子プロセスとして起動するシェルのハーネス（ `bin/trinity`・`lib/actors.sh` ）、そしてフォアグラウンドのオーケストレーター（ `commands/run.md` ）。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Orchestrator が Issue 群を `backlog.tsv` に落とし、Issue ごとの背景パイプラインが `Plan → Generator → 道具 → Evaluator` を Production-Ready まで反復する。人がつくのはタスク投入直後——方針を確定するまで——であり、確定後は無人で走り切る。auto-mode で動かす前提の実装である。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
 
+## Product Management
+
+最善の実装は、実装しないことである。機能追加には実装コストや保守コストが発生する。
+ビルドトラップに陥らず本当に必要な機能のみを実装し、まずは実装しない解決策を検討する。
+
 ## 変更の検証方法
 
 自動テストはない。シェルを書き換えたら最低限 `bash -n` と `shellcheck -S warning` を通す。挙動の確認は、このプラグインを入れた別プロジェクト（または使い捨ての作業ツリー）で実際に `/trinity:run` を小さな要件で回し、各アクターの出力と制御フローを観察して行う。書き換えた部品が解決していた失敗モードを再現できるか、あるいは不要になったかで評価する。
