@@ -6,8 +6,10 @@
 #       Plan → Generate → 道具 → Evaluate を TRINITY_MAX_LOOPS 回（既定 5）反復する。
 #       確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
 #   supervise <SESSION_DIR>
-#       backlog.tsv を読み、起動可能な Issue を TRINITY_MAX_PARALLEL（既定 3）の範囲で
-#       背景起動し、手当てが要るイベントまでブロックして STATUS 表と EVENT: を返す。
+#       backlog.tsv（slug・worktree・branch・title の薄い起動リスト）を読み、
+#       Issue を TRINITY_MAX_PARALLEL（既定 3）の範囲で背景起動し、空きスロットに
+#       次の行を順次投入して監視する。手当てが要るイベントまでブロックして
+#       STATUS 表と EVENT: を返す。
 #
 # 環境変数: TRINITY_MAX_LOOPS / TRINITY_ASK_TIMEOUT /
 #            TRINITY_MAX_PARALLEL / TRINITY_WAIT_TIMEOUT
@@ -115,20 +117,9 @@ supervise_main() {
 
   status_of() { cat "${SESSION_DIR}/$1/status" 2>/dev/null || echo "-"; }
 
-  # 全依存が passed なら真（0）を返す。
-  deps_satisfied() {
-    local deps="$1" dep
-    [ "${deps}" = "-" ] && return 0
-    local dep_list
-    IFS=',' read -ra dep_list <<< "${deps}"
-    for dep in "${dep_list[@]}"; do
-      [ "$(status_of "${dep}")" = passed ] || return 1
-    done
-  }
-
   running_count() {  # queued も計上し起動直後の監視レースを防ぐ
     local n=0 s
-    while IFS=$'\t' read -r slug _ _remainder; do
+    while IFS=$'\t' read -r slug _remainder; do
       { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       s="$(status_of "${slug}")"
       case "${s}" in
@@ -141,23 +132,22 @@ supervise_main() {
 
   print_status() {
     printf 'STATUS\n'
-    while IFS=$'\t' read -r slug _deps _remainder; do
+    while IFS=$'\t' read -r slug _worktree _branch _title; do
       { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       printf '  %s\t%s\n' "${slug}" "$(status_of "${slug}")"
     done < "${BACKLOG}"
   }
 
   launch_ready() {
-    local launched=0 slug deps worktree branch title run_dir
-    while IFS=$'\t' read -r slug deps worktree branch title; do
+    local launched=0 slug worktree branch title run_dir
+    while IFS=$'\t' read -r slug worktree branch title; do
       [ -z "${slug}" ] && continue
       [ "${slug}" = "slug" ] && continue
       [ "${worktree}" = "-" ] && continue
       [ -f "${SESSION_DIR}/${slug}/status" ] && continue
-      deps_satisfied "${deps}" || continue
 
       if [ "$(running_count)" -ge "${TRINITY_MAX_PARALLEL}" ]; then
-        printf 'supervise: 並列上限 %s に到達。残りは次回再実行で起動する。\n' \
+        printf 'supervise: 並列上限 %s に到達。空きスロットができたら再起動する。\n' \
           "${TRINITY_MAX_PARALLEL}" >&2
         break
       fi
@@ -177,14 +167,13 @@ supervise_main() {
 
   launch_ready
 
-  local waited=0 needs_input ready_pending local_running local_pending slug deps s
+  local waited=0 needs_input local_running local_pending slug s
   while :; do
     needs_input=""
-    ready_pending=""
     local_running=0
     local_pending=0
 
-    while IFS=$'\t' read -r slug deps _remainder; do
+    while IFS=$'\t' read -r slug _remainder; do
       { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       s="$(status_of "${slug}")"
       case "${s}" in
@@ -193,8 +182,7 @@ supervise_main() {
         passed | failed | error)
           ;;
         "-")
-          local_pending=$((local_pending + 1))
-          deps_satisfied "${deps}" && ready_pending="${ready_pending} ${slug}" ;;
+          local_pending=$((local_pending + 1)) ;;
         *)
           local_running=$((local_running + 1)) ;;
       esac
@@ -209,11 +197,9 @@ supervise_main() {
       exit 0
     fi
 
-    if [ -n "${ready_pending}" ] && [ "${local_running}" -lt "${TRINITY_MAX_PARALLEL}" ]; then
-      print_status
-      for slug in ${ready_pending}; do printf 'ISSUE: %s\n' "${slug}"; done
-      printf 'EVENT: unblocked\n'
-      exit 0
+    # 空きスロットがあり未起動行が残っていれば追加投入
+    if [ "${local_pending}" -gt 0 ] && [ "${local_running}" -lt "${TRINITY_MAX_PARALLEL}" ]; then
+      launch_ready
     fi
 
     if [ "${local_running}" -eq 0 ] && [ "${local_pending}" -eq 0 ]; then
