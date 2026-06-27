@@ -36,7 +36,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 
 | 出力者 | 成果物 | 読む側 |
 | :-- | :-- | :-- |
-| Orchestrator | `${SESSION_DIR}/backlog.tsv`（Issue 群と worktree・依存） | `bin/trinity supervise` |
+| Orchestrator | `${SESSION_DIR}/backlog.tsv`（薄い起動リスト：slug・worktree・branch・title） | `bin/trinity supervise` |
 | Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
 | Generator | worktree 内の1コミット(SHA)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |
