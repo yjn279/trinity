@@ -72,6 +72,9 @@ trinity::plan() {
   if [ ! -f "${RUN_DIR}/plan.md" ]; then
     trinity::status error; return 1
   fi
+  if [ ! -f "${RUN_DIR}/tasks.tsv" ]; then
+    trinity::status error; return 1
+  fi
   if grep -q '^## 要確認の論点' "${RUN_DIR}/plan.md"; then
     trinity::status needs-input
     return 10
@@ -81,8 +84,9 @@ trinity::plan() {
 
 # trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（1タスク=1コミット）。
 trinity::generate() {
-  local loop="$1" idx title files prompt
+  local loop="$1" idx title files prompt pre_sha post_sha
   trinity::status generating
+  pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   local total; total="$(grep -c $'\t' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
   while IFS=$'\t' read -r idx title files; do
     [ -z "${idx}" ] && continue
@@ -95,17 +99,30 @@ trinity::generate() {
     trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
       > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
   done < "${RUN_DIR}/tasks.tsv"
+  post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  if [ "${pre_sha}" = "${post_sha}" ]; then
+    trinity::log "generate: Generator がコミットを作成しなかった"
+    trinity::status error
+    return 1
+  fi
 }
 
 # trinity::revise LOOP — FAIL のとき計画の範囲内で修正コミットを作らせる。
 trinity::revise() {
-  local loop="$1" prev prompt
+  local loop="$1" prev prompt pre_sha post_sha
   prev=$((loop - 1))
   trinity::status generating
+  pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
 - 修正モード: ${RUN_DIR}/eval-${prev}.md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
+  post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  if [ "${pre_sha}" = "${post_sha}" ]; then
+    trinity::log "revise: Generator がコミットを作成しなかった"
+    trinity::status error
+    return 1
+  fi
 }
 
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
@@ -118,7 +135,7 @@ trinity::tools() {
     "/simplify" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 || true
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
-    git -C "${WORKTREE_DIR}" add -A
+    git -C "${WORKTREE_DIR}" add -A || true
     git -C "${WORKTREE_DIR}" commit -q -m "chore: /code-review --fix と /simplify の修正を反映する" || true
   fi
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \

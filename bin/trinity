@@ -73,9 +73,7 @@ loop_main() {
   local loop=1 mode=plan rc
   while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
     if [ "${mode}" = plan ]; then
-      if trinity::plan "${loop}"; then
-        :
-      else
+      if ! trinity::plan "${loop}"; then
         rc=$?
         if [ "${rc}" -eq 10 ]; then
           loop::ask "${loop}"
@@ -115,7 +113,10 @@ supervise_main() {
   : "${TRINITY_MAX_PARALLEL:=3}"
   : "${TRINITY_WAIT_TIMEOUT:=3600}"
 
-  status_of() { cat "${SESSION_DIR}/$1/status" 2>/dev/null || echo "-"; }
+  status_of() {
+    local f="${SESSION_DIR}/$1/status"
+    [ -f "$f" ] && printf '%s\n' "$(< "$f")" || echo "-"
+  }
 
   running_count() {  # queued も計上し起動直後の監視レースを防ぐ
     local n=0 s
@@ -139,14 +140,14 @@ supervise_main() {
   }
 
   launch_ready() {
-    local launched=0 slug worktree branch title run_dir
+    local launched=0 current_running slug worktree branch title run_dir
+    current_running="$(running_count)"
     while IFS=$'\t' read -r slug worktree branch title; do
-      [ -z "${slug}" ] && continue
-      [ "${slug}" = "slug" ] && continue
+      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       [ "${worktree}" = "-" ] && continue
       [ -f "${SESSION_DIR}/${slug}/status" ] && continue
 
-      if [ "$(running_count)" -ge "${TRINITY_MAX_PARALLEL}" ]; then
+      if [ "${current_running}" -ge "${TRINITY_MAX_PARALLEL}" ]; then
         printf 'supervise: 並列上限 %s に到達。空きスロットができたら再起動する。\n' \
           "${TRINITY_MAX_PARALLEL}" >&2
         break
@@ -161,6 +162,7 @@ supervise_main() {
         >> "${run_dir}/pipeline.out" 2>&1 &
       printf '%s\n' "$!" > "${run_dir}/pid"
       launched=$((launched + 1))
+      current_running=$((current_running + 1))
     done < "${BACKLOG}"
     printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
   }
