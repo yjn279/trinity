@@ -59,9 +59,13 @@ trinity::assert_commit() {
   fi
 }
 
-# trinity::base — origin/main との merge-base（diff・レビュー範囲の起点）。
+# trinity::base — リモートデフォルトブランチとの merge-base（diff・レビュー範囲の起点）。
 trinity::base() {
-  git -C "${WORKTREE_DIR}" merge-base HEAD origin/main 2>/dev/null \
+  local remote_head
+  remote_head="$(git -C "${WORKTREE_DIR}" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null)" || true
+  remote_head="${remote_head##*/}"
+  [ -z "${remote_head}" ] && remote_head="main"
+  git -C "${WORKTREE_DIR}" merge-base HEAD "origin/${remote_head}" 2>/dev/null \
     || git -C "${WORKTREE_DIR}" rev-list --max-parents=0 HEAD | tail -1
 }
 
@@ -116,10 +120,8 @@ trinity::plan() {
 # gen-<n>-task-<i>.md（完了レポート）が既にあるタスクはスキップする（再開のチェックポイント）。
 trinity::generate() {
   local loop="$1" idx title files prompt pre_sha agent_body
-  local executed=0
   trinity::status generating
-  pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
-  local total; total="$(grep -c $'\t' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
+  local total; total="$(awk -F'\t' '$1~/^[0-9]+$/{n++} END{print n+0}' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
   agent_body="$(trinity::agent_body generator)"
   while IFS=$'\t' read -r idx title files; do
     [ -z "${idx}" ] && continue
@@ -128,6 +130,7 @@ trinity::generate() {
       continue
     fi
     trinity::log "generate loop ${loop} task ${idx}/${total}: ${title}"
+    pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
     prompt="${agent_body}$(trinity::context "$loop")
 - TaskIndex: ${idx}
 - TaskTotal: ${total}
@@ -135,26 +138,22 @@ trinity::generate() {
 - TaskFiles: ${files}"
     trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
       > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
-    executed=$((executed + 1))
+    trinity::assert_commit "${pre_sha}" "generate task ${idx}"
   done < "${RUN_DIR}/tasks.tsv"
-  if [ "${executed}" -gt 0 ]; then
-    trinity::assert_commit "${pre_sha}" "generate"
-  fi
 }
 
 # trinity::revise LOOP — FAIL のとき計画の範囲内で修正コミットを作らせる。
 # gen-<n>-revise.md（完了レポート）が既にあればスキップする（再開のチェックポイント）。
 trinity::revise() {
-  local loop="$1" prev prompt pre_sha post_sha
+  local loop="$1" prompt pre_sha
   if [ -f "${RUN_DIR}/gen-${loop}-revise.md" ]; then
     trinity::log "gen-${loop}-revise.md が既にある。revise をスキップする"
     return 0
   fi
-  prev=$((loop - 1))
   trinity::status generating
   pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
-- 修正モード: ${RUN_DIR}/eval-${prev}.md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
+- 修正モード: ${RUN_DIR}/eval-$((loop - 1)).md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
   trinity::assert_commit "${pre_sha}" "revise"
@@ -165,17 +164,20 @@ trinity::tools() {
   local loop="$1" base; base="$(trinity::base)"
   trinity::status reviewing
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/code-review --fix ${base}..HEAD" > "${RUN_DIR}/review-${loop}.md" 2>&1 || true
+    "/code-review --fix ${base}..HEAD" > "${RUN_DIR}/review-${loop}.md" 2>&1 \
+    || trinity::log "WARN: /code-review --fix が非ゼロで終了した"
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/simplify" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 || true
+    "/simplify" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 \
+    || trinity::log "WARN: /simplify が非ゼロで終了した"
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
     git -C "${WORKTREE_DIR}" add -A || true
-    git -C "${WORKTREE_DIR}" commit -q -m "chore: /code-review --fix と /simplify の修正を反映する" || true
+    git -C "${WORKTREE_DIR}" commit -q -m "chore: 道具の自動修正を反映する" || true
   fi
   trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
     "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。" \
-    > "${RUN_DIR}/verify-${loop}.md" 2>&1 || true
+    > "${RUN_DIR}/verify-${loop}.md" 2>&1 \
+    || trinity::log "WARN: /verify が非ゼロで終了した"
 }
 
 # trinity::evaluate LOOP — Evaluator を起動し eval-<n>.md を書かせる。戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=不明。

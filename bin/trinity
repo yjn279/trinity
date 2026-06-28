@@ -118,14 +118,13 @@ loop_main() {
 
   while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
     if [ "${mode}" = plan ]; then
-      if ! trinity::plan "${loop}"; then
-        rc=$?
-        if [ "${rc}" -eq "${TRINITY_RC_NEEDS_INPUT}" ]; then
-          loop::ask "${loop}"
-          continue
-        fi
-        exit 1
+      rc=0
+      trinity::plan "${loop}" || rc=$?
+      if [ "${rc}" -eq "${TRINITY_RC_NEEDS_INPUT}" ]; then
+        loop::ask "${loop}"
+        continue
       fi
+      [ "${rc}" -ne 0 ] && exit 1
       trinity::generate "${loop}"
     else
       trinity::revise "${loop}"
@@ -158,6 +157,16 @@ supervise_main() {
   : "${TRINITY_MAX_PARALLEL:=3}"
   : "${TRINITY_WAIT_TIMEOUT:=3600}"
 
+  local _bwait=0
+  while [ ! -f "${BACKLOG}" ]; do
+    sleep 1
+    _bwait=$((_bwait + 1))
+    if [ "${_bwait}" -ge 30 ]; then
+      printf 'supervise: backlog.tsv が見つからない: %s\n' "${BACKLOG}" >&2
+      exit 1
+    fi
+  done
+
   status_of() {
     local f="${SESSION_DIR}/$1/status"
     [ -f "$f" ] && printf '%s\n' "$(< "$f")" || echo "-"
@@ -166,29 +175,26 @@ supervise_main() {
   running_count() {  # queued も計上し起動直後の監視レースを防ぐ
     local n=0 s
     while IFS=$'\t' read -r slug _remainder; do
-      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       s="$(status_of "${slug}")"
       case "${s}" in
         passed | failed | error | "-") ;;
         *) n=$((n + 1)) ;;
       esac
-    done < "${BACKLOG}"
+    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
     printf '%s' "${n}"
   }
 
   print_status() {
     printf 'STATUS\n'
     while IFS=$'\t' read -r slug _worktree _branch _title; do
-      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       printf '  %s\t%s\n' "${slug}" "$(status_of "${slug}")"
-    done < "${BACKLOG}"
+    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
   }
 
   launch_ready() {
     local launched=0 current_running slug worktree branch title run_dir
     current_running="$(running_count)"
     while IFS=$'\t' read -r slug worktree branch title; do
-      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       [ "${worktree}" = "-" ] && continue
       [ -f "${SESSION_DIR}/${slug}/status" ] && continue
 
@@ -208,7 +214,7 @@ supervise_main() {
       printf '%s\n' "$!" > "${run_dir}/pid"
       launched=$((launched + 1))
       current_running=$((current_running + 1))
-    done < "${BACKLOG}"
+    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
     printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
   }
 
@@ -221,7 +227,6 @@ supervise_main() {
     local_pending=0
 
     while IFS=$'\t' read -r slug _remainder; do
-      { [ -z "${slug}" ] || [ "${slug}" = "slug" ]; } && continue
       s="$(status_of "${slug}")"
       case "${s}" in
         needs-input)
@@ -233,7 +238,7 @@ supervise_main() {
         *)
           local_running=$((local_running + 1)) ;;
       esac
-    done < "${BACKLOG}"
+    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
 
     if [ -n "${needs_input}" ]; then
       print_status
