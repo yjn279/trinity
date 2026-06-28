@@ -31,4 +31,4 @@ Trinityハーネスの「Generator」。Plannerが書いた `${RUN_DIR}/plan.md`
 
 # 出力
 
-`${RUN_DIR}/gen-<n>-task-<TaskIndex>.md` にタスクの実施レポート（コミットSHA・触れたファイル・検証結果・Evaluator向け注記）を書き、そのパスを返す。
+`${RUN_DIR}/gen-<n>-task-<TaskIndex>.md` にタスクの実施レポート（コミットSHA・触れたファイル・検証結果・Evaluator向け注記）を書く。このレポートを書くのは**コミット成功後の最後のステップ**とする。コミットを作らずに停止する場合はレポートを書かない（レポートの存在がタスク完了の信号であり、ハーネスがスキップ判定に使う）。修正モードのレポートは `${RUN_DIR}/gen-<n>-revise.md` とする。
