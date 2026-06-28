@@ -79,12 +79,18 @@ EOF
 }
 
 # trinity::plan LOOP — Planner を起動し plan.md と tasks.tsv を生成させる。
+# plan-<n>.md と tasks.tsv が既にあれば Planner をスキップして plan.md を復元する（再開）。
 # `## 要確認の論点` があれば needs-input にして 10 を返す（loop 側でブロック）。
 trinity::plan() {
   local loop="$1"
+  # plan-<n>.md と tasks.tsv が両方あれば Planner をスキップし plan.md を復元する（再開）。
+  if [ -f "${RUN_DIR}/plan-${loop}.md" ] && [ -f "${RUN_DIR}/tasks.tsv" ]; then
+    trinity::log "plan-${loop}.md が既にある。Planner をスキップし plan.md を復元する"
+    cp "${RUN_DIR}/plan-${loop}.md" "${RUN_DIR}/plan.md"
+    return 0
+  fi
   trinity::status planning
   # tasks.tsv を事前に削除して失敗時の古いファイル誤検出を防ぐ。
-  # plan.md は Planner が退避（plan-<n-1>.md）してから上書きするため残す。
   rm -f "${RUN_DIR}/tasks.tsv"
   local prompt
   prompt="$(trinity::agent_body planner)$(trinity::context "$loop")"
@@ -101,18 +107,26 @@ trinity::plan() {
   if [ ! -f "${RUN_DIR}/tasks.tsv" ]; then
     trinity::status error; return 1
   fi
+  # 計画成功後に plan.md を plan-<n>.md へスナップショットする（再開のチェックポイント）。
+  cp "${RUN_DIR}/plan.md" "${RUN_DIR}/plan-${loop}.md"
   return 0
 }
 
 # trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（1タスク=1コミット）。
+# gen-<n>-task-<i>.md（完了レポート）が既にあるタスクはスキップする（再開のチェックポイント）。
 trinity::generate() {
   local loop="$1" idx title files prompt pre_sha agent_body
+  local executed=0
   trinity::status generating
   pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   local total; total="$(grep -c $'\t' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
   agent_body="$(trinity::agent_body generator)"
   while IFS=$'\t' read -r idx title files; do
     [ -z "${idx}" ] && continue
+    if [ -f "${RUN_DIR}/gen-${loop}-task-${idx}.md" ]; then
+      trinity::log "generate loop ${loop} task ${idx}/${total}: スキップ（完了済み）"
+      continue
+    fi
     trinity::log "generate loop ${loop} task ${idx}/${total}: ${title}"
     prompt="${agent_body}$(trinity::context "$loop")
 - TaskIndex: ${idx}
@@ -121,13 +135,21 @@ trinity::generate() {
 - TaskFiles: ${files}"
     trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
       > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
+    executed=$((executed + 1))
   done < "${RUN_DIR}/tasks.tsv"
-  trinity::assert_commit "${pre_sha}" "generate"
+  if [ "${executed}" -gt 0 ]; then
+    trinity::assert_commit "${pre_sha}" "generate"
+  fi
 }
 
 # trinity::revise LOOP — FAIL のとき計画の範囲内で修正コミットを作らせる。
+# gen-<n>-revise.md（完了レポート）が既にあればスキップする（再開のチェックポイント）。
 trinity::revise() {
   local loop="$1" prev prompt pre_sha post_sha
+  if [ -f "${RUN_DIR}/gen-${loop}-revise.md" ]; then
+    trinity::log "gen-${loop}-revise.md が既にある。revise をスキップする"
+    return 0
+  fi
   prev=$((loop - 1))
   trinity::status generating
   pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
