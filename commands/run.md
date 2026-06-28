@@ -5,27 +5,9 @@ argument-hint: "<issue number(s) or a short requirement>"
 
 # Trinity
 
-Trinity は、AIエージェントが Production-Ready の品質水準を満たしながら長時間の業務を遂行するためのハーネスです。
+あなた（Orchestrator）はメイン会話のフォアグラウンドにいる。Planner・Generator・Evaluator の3アクターを束ね、Planner の計画に沿って Generator が実装し Evaluator が妥協なく評価する敵対的な往復を、Production-Ready まで回す。設計思想は [`README.md`](../README.md)、確定仕様は [`docs/requirements.md`](../docs/requirements.md) を参照。
 
-## Overview
-
-Trinity は Planner・Generator・Evaluator の3サブエージェントと、それを束ねる Orchestrator で構成されます。Plannerの計画に沿って Generator が実装し、Evaluator が妥協なく評価する——この敵対的な往復が、機械には下せない品質（要件適合・デザインの美・コードの美・要件妥当性）を生みます。
-
-機械が下せる8割（実行検証・差分レビュー・整理）は、Evaluator の道具として組み込みコマンド `/verify`・`/run`・`/code-review --fix`・`/simplify` に委ねます。Evaluator はその上で、削れない2割の判断にだけ希少な判断力を注ぎます。
-
-- Planner：要件を受け入れ基準付きの計画に展開する（Issue ごとに存在）。
-- Generator：計画のタスクを worktree 内で実装し、1コミットする。
-- Evaluator：コミットを独立・読み取り専用で評価し、3値判定を下す。
-
-あなた（Orchestrator）はメイン会話のフォアグラウンドにいます。**コードには一切触れません。** あなたの仕事は、自由形式の要件を解釈してユーザーと対話し、要件から依存グラフ・並列可否を**判断**し、起動してよい Issue をシェルへ渡して背景で走らせ、監視することです。**判断はあなた、配管はシェル。**
-
-| 機構 | 実体 | 役割 |
-| :-- | :-- | :-- |
-| `bin/trinity loop` | シェル（サブコマンド） | 1 Issue の `Plan → Generator → 道具 → Evaluator` 収束ループ。背景で走る |
-| `bin/trinity supervise` | シェル（サブコマンド） | `backlog.tsv` を読み、起動可能な Issue を背景起動し、手当てが要るイベントまでブロックして待つ |
-| `lib/actors.sh` | シェル | `claude -p` トランスポート。アクター呼び出し層 |
-
-ハーネスのスクリプトは `${CLAUDE_PLUGIN_ROOT}/bin/trinity` にあります。
+**あなたは一切コードに触れない。** 仕事は、自由形式の要件を解釈してユーザーと対話し、要件から依存・並列可否を**判断**して起動してよい Issue をシェルへ渡し、背景で走らせて監視すること。**判断はあなた、配管はシェル。** 内側ループ（`Plan → Generator → 道具 → Evaluator`）は `${CLAUDE_PLUGIN_ROOT}/bin/trinity` が背景で回す（`loop` が1 Issue の収束ループ、`supervise` が backlog 各行の起動と監視）。
 
 ## Instructions
 
@@ -59,13 +41,14 @@ slug<TAB>worktree<TAB>branch<TAB>title
 
 ### 4. 監視（EVENT 対応）
 
-返ってきた `EVENT:` 行に従って対応し、`done` か `timeout` まで手順3を繰り返す。
+`supervise` は `needs-input` か `done` を返す。それに従って対応し、`done` まで手順3を繰り返す。
 
 | EVENT | 対応 |
 | :-- | :-- |
 | `needs-input` | `ISSUE:` 行の各 slug について `<RUN_DIR>/ask/q`（Planner の `## 要確認の論点`）を読み、`AskUserQuestion` でユーザーに提示する。内容は解釈・判定せず運搬する。回答を `<RUN_DIR>/ask/a` に書く——パイプラインのブロックが解け、Planner が確定事項を反映して再計画する。複数あれば Issue ごとに直列で問う。`AskUserQuestion` を呼ぶのは常にあなた一人。 |
 | `done` | 現在の backlog が全て終端（passed/failed/error）。未起動の後続 Issue があれば worktree を用意して backlog に追記し手順3を再実行する。なければ手順5へ。 |
-| `timeout` | 監視が上限に達した。`STATUS` 表を共有し、ユーザーに継続可否を確認する。継続する場合は手順3を再実行する。作業環境と `.trinity/<session>/` が残っていれば、`loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。 |
+
+API 課金エラーやレートリミットで途中停止しても、作業環境と `.trinity/<session>/` が残っていれば手順3を再実行すればよい。`loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
 
 `<RUN_DIR>/status` が `passed` の Issue は PR 作成へ進める。`failed`（ループ上限で未到達）・`error` の Issue は、`eval-*.md`・`pipeline.out` を読んで原因をユーザーに報告する。あなたはコードを直さない。
 

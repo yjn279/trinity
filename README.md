@@ -2,7 +2,7 @@
 
 Trinity は、Anthropic の Planner / Generator / Evaluator パターンを Claude Code のサブエージェントで実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、修正要否・課題起票・クリーンアップをユーザーに確認しながら統合まで進める。
 
-小さい具体的タスクから大きな抽象的タスクまで、あらゆるエンジニアリングタスクを同じひとつの仕組みに落とす。ユーザーが負うのはバックログの管理と、成果を受け入れるかの判断だけになる。フォアグラウンドの Orchestrator は自由形式の要件解釈とユーザー対話に専念し、Issue ごとの収束ループ（`Plan → Generator → 道具 → Evaluator`）はシェルへ機械化して背景で回す。機械が下せる8割——実行検証・差分レビュー・整理——は組み込みコマンド `/verify`・`/run`・`/code-review --fix`・`/simplify` を Evaluator の道具として委ね、Evaluator は削れない2割の判断にだけ希少な判断力を注ぐ。
+小さい具体的タスクから大きな抽象的タスクまで、あらゆるエンジニアリングタスクを同じひとつの仕組みに落とす。ユーザーが負うのはバックログの管理と、成果を受け入れるかの判断だけになる。フォアグラウンドの Orchestrator は自由形式の要件解釈とユーザー対話に専念し、Issue ごとの収束ループ（`Plan → Generator → 道具 → Evaluator`）はシェルへ機械化して背景で回す。機械が下せる8割——実行検証・差分レビュー・整理——は組み込みコマンド `/verify`・`/code-review --fix`・`/simplify` を Evaluator の道具として委ね、Evaluator は削れない2割の判断にだけ希少な判断力を注ぐ。
 
 ## 役割の分離と独立性
 
@@ -55,7 +55,7 @@ Trinity が計画・実装を扱う処理単位を、粒度の大きい順に定
 
 ## 処理フロー
 
-要件を受け取った Orchestrator は、Issue 群を `backlog.tsv` に落とし、`trinity supervise` で Issue ごとのパイプラインを背景起動する。各パイプライン（`trinity loop`）の内部では Planner・Generator・Evaluator が `claude -p` の別プロセスとして連携し、道具で機械的な8割を片付けた上で、Evaluator の3値判定がループの継続と離脱を決める。図は処理の全体像を抽象的に示す。
+全体像を図に示す。Orchestrator が起動可能な Issue を `backlog.tsv` に渡し、`trinity supervise` が各 Issue のパイプライン（`trinity loop`）を背景起動する。各ループは道具で機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める。
 
 ```mermaid
 flowchart LR
@@ -100,7 +100,7 @@ Trinity を動かすには、以下のスキル／コマンドを事前にイン
 
 - [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow) — worktree の作成・ブランチ管理・PR 統合を担うスキル。Orchestrator はこのスキルに git 運用を委譲する。
 - [code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review) — `/code-review --fix` を Evaluator の道具として、差分のバグと整理を自動修正するために使う。
-- `/simplify`・`/verify`・`/run` — それぞれ整理の適用、挙動の検証、アプリの起動を担う Evaluator の道具。Claude Code の組み込みコマンド。
+- `/simplify`・`/verify` — それぞれ整理の適用、挙動の検証を担う Evaluator の道具。Claude Code の組み込みコマンド。
 
 現状のターゲットは Claude（`claude -p`）。各アクターの呼び出しは `lib/actors.sh` に閉じており、別エージェント CLI へ寄せる場合の差し替え境界もここになる。
 

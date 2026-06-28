@@ -3,17 +3,12 @@
 #
 # サブコマンド:
 #   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
-#       Plan → Generate → 道具 → Evaluate を TRINITY_MAX_LOOPS 回（既定 5）反復する。
+#       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
 #       確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
-#       中断後の再起動では RUN_DIR の既存成果物から到達点を判定し中断点から再開する。
+#       再起動時は RUN_DIR の既存成果物から中断点を判定して再開する。
 #   supervise <SESSION_DIR>
-#       backlog.tsv（slug・worktree・branch・title の薄い起動リスト）を読み、
-#       Issue を TRINITY_MAX_PARALLEL（既定 3）の範囲で背景起動し、空きスロットに
-#       次の行を順次投入して監視する。手当てが要るイベントまでブロックして
-#       STATUS 表と EVENT: を返す。
-#
-# 環境変数: TRINITY_MAX_LOOPS / TRINITY_ASK_TIMEOUT /
-#            TRINITY_MAX_PARALLEL / TRINITY_WAIT_TIMEOUT
+#       backlog.tsv（slug・worktree・branch・title）の各行を背景起動し、
+#       needs-input か done のイベントまでブロックして STATUS 表と EVENT: を返す。
 
 set -euo pipefail
 
@@ -46,32 +41,25 @@ loop_main() {
   . "${TRINITY_ROOT}/lib/actors.sh"
 
   : "${TRINITY_MAX_LOOPS:=5}"
-  : "${TRINITY_ASK_TIMEOUT:=1800}"
 
+  # 設計分岐の確認: plan.md の `## 要確認の論点` を ask/q に出し、回答（ask/a）を待つ。
+  # 人間の確認に締切は設けない（回答が来るまで安価に待つ）。
   loop::ask() {
-    local loop="$1" waited=0
+    local loop="$1"
     awk '/^## 要確認の論点/{p=1;print;next} p&&/^## /{p=0} p' \
       "${RUN_DIR}/plan.md" > "${RUN_DIR}/ask/q"
     rm -f "${RUN_DIR}/ask/a"
     trinity::status needs-input
     trinity::log "ループ ${loop}: 確認待ち（ask/q を Orchestrator が拾う）"
-    while [ ! -f "${RUN_DIR}/ask/a" ]; do
-      sleep 5
-      waited=$((waited + 5))
-      if [ "${waited}" -ge "${TRINITY_ASK_TIMEOUT}" ]; then
-        trinity::log "確認待ちがタイムアウトした"
-        trinity::status error
-        exit 1
-      fi
-    done
+    while [ ! -f "${RUN_DIR}/ask/a" ]; do sleep 5; done
     { printf '\n## 確定事項（ループ %s で確認済み）\n' "${loop}"; cat "${RUN_DIR}/ask/a"; } \
       >> "${RUN_DIR}/requirement.md"
     rm -f "${RUN_DIR}/ask/q" "${RUN_DIR}/ask/a"
   }
 
   # RUN_DIR の既存成果物から再開ループ番号とモードを返す。
-  # 出力形式: "<n> <mode>"（例: "2 plan"）
-  # PASS 済みのときは "PASS" のみを返す。各段は自己スキップするため入口判定は不要。
+  # 出力形式: "<n> <mode>"（例: "2 plan"）。PASS 済みのときは "PASS" のみ。
+  # 各段は自己スキップするため入口判定は不要。
   loop::resume_point() {
     local k=0 k_verdict="" num="" verdict="" f
     for f in "${RUN_DIR}"/eval-*.md; do
@@ -90,7 +78,6 @@ loop_main() {
     if [ "${k}" -eq 0 ]; then
       printf '1 plan\n'; return
     fi
-
     [ "${k_verdict}" = PASS ] && { printf 'PASS\n'; return; }
 
     local n mode
@@ -112,9 +99,7 @@ loop_main() {
     exit 0
   fi
   read -r loop mode <<< "${resume}"
-  if [ "${loop}" -gt 1 ]; then
-    trinity::log "再開: ループ ${loop} から ${mode} で再開する"
-  fi
+  [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
 
   while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
     if [ "${mode}" = plan ]; then
@@ -148,14 +133,12 @@ loop_main() {
   exit 2
 }
 
-# --- supervise — 複数 Issue の起動＋監視 ------------------------------------
+# --- supervise — Issue 群の起動＋監視 --------------------------------------
+# 並列数は Orchestrator が backlog に書く行数で決まる（シェルは上限を持たない）。
 supervise_main() {
   local SESSION_DIR BACKLOG
   SESSION_DIR="${1:?usage: trinity supervise <SESSION_DIR>}"
   BACKLOG="${SESSION_DIR}/backlog.tsv"
-
-  : "${TRINITY_MAX_PARALLEL:=3}"
-  : "${TRINITY_WAIT_TIMEOUT:=3600}"
 
   local _bwait=0
   while [ ! -f "${BACKLOG}" ]; do
@@ -172,73 +155,44 @@ supervise_main() {
     [ -f "$f" ] && printf '%s\n' "$(< "$f")" || echo "-"
   }
 
-  running_count() {  # queued も計上し起動直後の監視レースを防ぐ
-    local n=0 s
-    while IFS=$'\t' read -r slug _remainder; do
-      s="$(status_of "${slug}")"
-      case "${s}" in
-        passed | failed | error | "-") ;;
-        *) n=$((n + 1)) ;;
-      esac
-    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
-    printf '%s' "${n}"
-  }
-
   print_status() {
     printf 'STATUS\n'
-    while IFS=$'\t' read -r slug _worktree _branch _title; do
+    while IFS=$'\t' read -r slug _rest; do
+      { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue
       printf '  %s\t%s\n' "${slug}" "$(status_of "${slug}")"
-    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
+    done < "${BACKLOG}"
   }
 
-  launch_ready() {
-    local launched=0 current_running slug worktree branch title run_dir
-    current_running="$(running_count)"
-    while IFS=$'\t' read -r slug worktree branch title; do
-      [ "${worktree}" = "-" ] && continue
-      [ -f "${SESSION_DIR}/${slug}/status" ] && continue
+  # backlog の各行を背景起動する（既に status がある行は再起動しない）。
+  local launched=0 slug worktree branch title run_dir
+  while IFS=$'\t' read -r slug worktree branch title; do
+    { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue   # 空行・ヘッダ行を飛ばす
+    [ -f "${SESSION_DIR}/${slug}/status" ] && continue
+    run_dir="${SESSION_DIR}/${slug}"
+    mkdir -p "${run_dir}"
+    printf 'queued\n' > "${run_dir}/status"
+    printf 'supervise: launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}" >&2
+    nohup "${TRINITY_ROOT}/bin/trinity" loop "${run_dir}" "${worktree}" "${branch}" \
+      >> "${run_dir}/pipeline.out" 2>&1 &
+    printf '%s\n' "$!" > "${run_dir}/pid"
+    launched=$((launched + 1))
+  done < "${BACKLOG}"
+  printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
 
-      if [ "${current_running}" -ge "${TRINITY_MAX_PARALLEL}" ]; then
-        printf 'supervise: 並列上限 %s に到達。空きスロットができたら再起動する。\n' \
-          "${TRINITY_MAX_PARALLEL}" >&2
-        break
-      fi
-
-      run_dir="${SESSION_DIR}/${slug}"
-      mkdir -p "${run_dir}"
-      printf 'queued\n' > "${run_dir}/status"
-      printf 'supervise: launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}" >&2
-
-      nohup "${TRINITY_ROOT}/bin/trinity" loop "${run_dir}" "${worktree}" "${branch}" \
-        >> "${run_dir}/pipeline.out" 2>&1 &
-      printf '%s\n' "$!" > "${run_dir}/pid"
-      launched=$((launched + 1))
-      current_running=$((current_running + 1))
-    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
-    printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
-  }
-
-  launch_ready
-
-  local waited=0 needs_input local_running local_pending slug s
+  # needs-input（確認待ち）か、全 Issue が終端（done）になるまで監視する。
+  local needs_input running s
   while :; do
     needs_input=""
-    local_running=0
-    local_pending=0
-
-    while IFS=$'\t' read -r slug _remainder; do
+    running=0
+    while IFS=$'\t' read -r slug _rest; do
+      { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue
       s="$(status_of "${slug}")"
       case "${s}" in
-        needs-input)
-          needs_input="${needs_input} ${slug}" ;;
-        passed | failed | error)
-          ;;
-        "-")
-          local_pending=$((local_pending + 1)) ;;
-        *)
-          local_running=$((local_running + 1)) ;;
+        needs-input)             needs_input="${needs_input} ${slug}" ;;
+        passed | failed | error) ;;
+        *)                       running=$((running + 1)) ;;
       esac
-    done < <(awk 'NR>1 && $1!=""' "${BACKLOG}")
+    done < "${BACKLOG}"
 
     if [ -n "${needs_input}" ]; then
       print_status
@@ -249,24 +203,13 @@ supervise_main() {
       exit 0
     fi
 
-    # 空きスロットがあり未起動行が残っていれば追加投入
-    if [ "${local_pending}" -gt 0 ] && [ "${local_running}" -lt "${TRINITY_MAX_PARALLEL}" ]; then
-      launch_ready
-    fi
-
-    if [ "${local_running}" -eq 0 ] && [ "${local_pending}" -eq 0 ]; then
+    if [ "${running}" -eq 0 ]; then
       print_status
       printf 'EVENT: done\n'
       exit 0
     fi
 
     sleep 5
-    waited=$((waited + 5))
-    if [ "${waited}" -ge "${TRINITY_WAIT_TIMEOUT}" ]; then
-      print_status
-      printf 'EVENT: timeout\n'
-      exit 0
-    fi
   done
 }
 

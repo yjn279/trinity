@@ -124,7 +124,7 @@ trinity::generate() {
   local total; total="$(awk -F'\t' '$1~/^[0-9]+$/{n++} END{print n+0}' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
   agent_body="$(trinity::agent_body generator)"
   while IFS=$'\t' read -r idx title files; do
-    [ -z "${idx}" ] && continue
+    case "${idx}" in ''|*[!0-9]*) continue ;; esac   # 空行・ヘッダ行を飛ばす
     if [ -f "${RUN_DIR}/gen-${loop}-task-${idx}.md" ]; then
       trinity::log "generate loop ${loop} task ${idx}/${total}: スキップ（完了済み）"
       continue
