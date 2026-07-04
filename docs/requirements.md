@@ -4,30 +4,25 @@
 
 ## 確定仕様
 
-ユーザーが確定と明言した仕様は以下の5点である。
+ユーザーが確定と明言した仕様を以下に示す。各ノード間で受け渡すデータの形式は未確定であり、固定スキーマを「正」として刻まない。
 
-**処理フロー**として、3アクター（Planner・Generator・Evaluator）と Tools による検証、Worktree と git-flow を用いる。各ノード間で受け渡すデータの形式は未確定であり、固定スキーマを「正」として刻まない。
-
-**AskUserQuestion を利用する**。設計の分岐はフォアグラウンドの Orchestrator が `AskUserQuestion` で解消し、背景アクターは `ask/q`・`ask/a` のファイルチャネルを経由して間接的に確認を行う。
-
-**3アクターがサブエージェントを起動できる**。Planner・Generator・Evaluator はそれぞれの作業のなかでさらにサブエージェントを呼べる。
-
-**ワークフローは柔軟である**。複数 Issue の並列処理・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する。単一 worktree のこともあれば複数 worktree にまたがることもある。
-
-**途中から再開できる**。実行が中断（API 使用量上限・レートリミット・障害など）しても、到達済みの工程をやり直さず、中断点から再開できる。
+| 仕様 | 内容 |
+| :-- | :-- |
+| 処理フロー | 3アクター（Planner・Generator・Evaluator）と Tools による検証を、Worktree と git-flow の上で回す |
+| AskUserQuestion | 設計の分岐はフォアグラウンドの Orchestrator が `AskUserQuestion` で解消し、背景アクターは `ask/q`・`ask/a` のファイルチャネルを経由して間接的に確認する |
+| サブエージェント起動 | Planner・Generator・Evaluator はそれぞれの作業のなかでさらにサブエージェントを呼べる |
+| ワークフローの柔軟性 | 複数 Issue の並列・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応し、単一 worktree のことも複数 worktree にまたがることもある |
+| 中断からの再開 | 実行が中断（使用量上限・レートリミット・障害など）しても、到達済みの工程をやり直さず中断点から再開する |
 
 ## 確定方針
 
-以下の方針はこのリポジトリの設計で確定している。
+確定仕様から導かれる設計判断を以下に示す。これらはこのリポジトリの実装で確定している。
 
-**`claude -p` ハーネスを維持する**。アクターを `claude -p` の子プロセスとして起動するのは2つの確定仕様の要請による。
-
-- アクター自身がサブエージェントを起動できる（ネイティブ subagent は入れ子起動ができない）。
-- long-running 前提のバックグラウンド実行が成り立つ。
-
-**判断は Orchestrator、配管はシェル**。依存関係・並列可否などの判断は LLM である Orchestrator が行う。その判断を受けて worktree をバックグラウンド起動し、並列実行・進捗監視・イベント通知を行う機構はシェルに置く。
-
-**固定スキーマを「正」として刻まない**。各ノード間で受け渡すデータ形式が未確定である以上、特定のスキーマや列定義を唯一の正とする記述は持ち込まない。ハーネスのパース契約として必要な最小構造は実装で定めるが、仕様書として固定化しない。
+| 方針 | 内容 |
+| :-- | :-- |
+| `claude -p` ハーネスの維持 | アクター自身がサブエージェントを起動でき（ネイティブ subagent は入れ子起動ができない）、long-running 前提の背景実行が成り立つため、アクターは `claude -p` の子プロセスとして起動する |
+| 判断は Orchestrator・配管はシェル | 依存関係・並列可否などの判断は LLM である Orchestrator が行い、worktree の背景起動・並列実行・進捗監視・イベント通知の機構はシェルに置く |
+| 固定スキーマを刻まない | ノード間のデータ形式が未確定である以上、特定のスキーマや列定義を唯一の正とする記述は持ち込まない。パース契約に要る最小構造は実装で定め、仕様として固定化しない |
 
 ## 不変条件
 
@@ -35,8 +30,10 @@
 
 | 不変条件 | 内容 |
 | :-- | :-- |
-| Orchestrator はコードに触れない | コードの読み書きは必ず Generator に委譲する。 |
-| アクターは `claude -p` 経由 | 振る舞いの単一の正は `agents/<role>.md`。`lib/actors.sh` は本文を指示として注入する。 |
-| worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}"` で操作し、`cd` で代替しない。 |
-| AskUserQuestion はフォアグラウンド限定 | 呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` で差し戻す。 |
-| 3値判定 | Evaluator は `eval-<n>.md` 先頭行に `VERDICT: PASS|NEEDS_REVISION|FAIL` を返し、ループ離脱は `PASS` だけで決まる。 |
+| Orchestrator はコードに触れない | コードの読み書きは必ず Generator に委譲する |
+| アクターは `claude -p` 経由 | 振る舞いの単一の正は `agents/<role>.md`。`lib/actors.sh` は本文を指示として注入する |
+| worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}"` で操作し、`cd` で代替しない |
+| AskUserQuestion はフォアグラウンド限定 | 呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` で差し戻す |
+| 3値判定 | Evaluator は `eval-<n>.md` 先頭行に `VERDICT: PASS|NEEDS_REVISION|FAIL` を返し、ループ離脱は `PASS` だけで決まる |
+</content>
+</invoke>

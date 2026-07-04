@@ -1,6 +1,6 @@
 # Trinity
 
-Trinity は、Anthropic の Planner / Generator / Evaluator パターンを Claude Code のサブエージェントで実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、修正要否・課題起票・クリーンアップをユーザーに確認しながら統合まで進める。
+Trinity は、Anthropic の Planner / Generator / Evaluator パターンを3つのサブエージェントとして実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、修正要否・課題起票・クリーンアップをユーザーに確認しながら統合まで進める。
 
 小さい具体的タスクから大きな抽象的タスクまで、あらゆるエンジニアリングタスクを同じひとつの仕組みに落とす。ユーザーが負うのはバックログの管理と、成果を受け入れるかの判断だけになる。フォアグラウンドの Orchestrator は自由形式の要件解釈とユーザー対話に専念し、Issue ごとの収束ループ（`Plan → Generator → 道具 → Evaluator`）はシェルへ機械化して背景で回す。機械が下せる8割——実行検証・差分レビュー・整理——は組み込みコマンド `/verify`・`/code-review --fix`・`/simplify` を Evaluator の道具として委ね、Evaluator は削れない2割の判断にだけ希少な判断力を注ぐ。
 
@@ -119,7 +119,7 @@ Trinity を動かすには、以下のスキル／コマンドを事前にイン
 /trinity:run #12 #15 #20
 ```
 
-`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は `AskUserQuestion` で修正要否・課題起票・クリーンアップを都度確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
+`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は `AskUserQuestion` で修正要否・課題起票・クリーンアップを都度確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
 
 ## リリース運用
 
