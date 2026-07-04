@@ -1,6 +1,6 @@
 # Trinity
 
-Trinity は、Anthropic の Planner / Generator / Evaluator パターンを3つのサブエージェントとして実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、修正要否・課題起票・クリーンアップをユーザーに確認しながら統合まで進める。
+Trinity は、Anthropic の Planner / Generator / Evaluator パターンを3つのサブエージェントとして実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、マージ候補の選択・課題起票・クリーンアップをユーザーに確認しながら進める。
 
 小さい具体的タスクから大きな抽象的タスクまで、あらゆるエンジニアリングタスクを同じひとつの仕組みに落とす。ユーザーが負うのはバックログの管理と、成果を受け入れるかの判断だけになる。フォアグラウンドの Orchestrator は自由形式の要件解釈とユーザー対話に専念し、Issue ごとの収束ループ（`Plan → Generator → 道具 → Evaluator`）はシェルへ機械化して背景で回す。機械が下せる8割——実行検証・差分レビュー・整理——は組み込みコマンド `/verify`・`/code-review --fix`・`/simplify` を Evaluator の道具として委ね、Evaluator は削れない2割の判断にだけ希少な判断力を注ぐ。
 
@@ -48,7 +48,7 @@ Trinity が計画・実装を扱う処理単位を、粒度の大きい順に定
 
 | 用語 | 定義 |
 | :-- | :-- |
-| セッション | `/trinity:run` の起動から、PR 作成・改善提案（課題起票）・クリーンアップまでの、コマンド1回の実行全体。複数のパイプラインを束ねる最上位の単位 |
+| セッション | `/trinity:run` の起動から、PR 作成・マージ候補の確認・改善提案（課題起票）・クリーンアップまでの、コマンド1回の実行全体。複数のパイプラインを束ねる最上位の単位 |
 | パイプライン | 1つの Worktree で実行される処理系列。ループを Production-Ready な品質水準に達するまで繰り返し、1つの PR を作成するまでの流れ |
 | ループ | パイプライン内で繰り返される `Plan → Generator → 道具 → Evaluator` の1周。道具（`/code-review --fix`・`/simplify`・`/verify`）で機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める |
 | タスク | 各 Generator が実施する1コミット単位の実行・動作。独立して動作し単独で検証可能な最小実装単位 |
@@ -92,15 +92,17 @@ flowchart LR
 | `NEEDS_REVISION` | 計画・要件が誤り。Planner が再計画する。要件自体が疑わしければ Planner が `## 要確認の論点` でユーザーに差し戻す |
 | `FAIL` | 既存計画の範囲内で Generator が修正する |
 
-`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成し、 `AskUserQuestion` で修正要否・課題起票・クリーンアップを順に確認する。計画中に設計分岐が見つかった場合、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
+`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。作成した PR 群は `AskUserQuestion` でマージ候補として提示し、選択されたものをマージしたうえで、課題起票・クリーンアップを確認する。計画中に設計分岐が見つかった場合、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
 
 ## Prerequisites
 
-Trinity を動かすには、以下のスキル／コマンドを事前にインストールする。ハーネスのシェルスクリプト（`bin/`）は実行可能ビットが立っている前提で、`bash` と `git`、`claude` CLI が PATH にあること。
+Trinity を動かすには、以下のスキル／コマンドが必要である。ハーネスのシェルスクリプト（`bin/`）は実行可能ビットが立っている前提で、`bash` と `git`、`claude` CLI が PATH にあること。
 
 - [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow) — worktree の作成・ブランチ管理・PR 統合を担うスキル。Orchestrator はこのスキルに git 運用を委譲する。
 - [code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review) — `/code-review --fix` を Evaluator の道具として、差分のバグと整理を自動修正するために使う。
 - `/simplify`・`/verify` — それぞれ整理の適用、挙動の検証を担う Evaluator の道具。Claude Code の組み込みコマンド。
+
+未導入のものがある場合、Trinity は `/trinity:run` 起動時に自動で検出し、確認なしでセットアップを実施する（`~/.claude` への変更を含む）。
 
 現状のターゲットは Claude（`claude -p`）。各アクターの呼び出しは `lib/actors.sh` に閉じており、別エージェント CLI へ寄せる場合の差し替え境界もここになる。
 
@@ -113,13 +115,13 @@ Trinity を動かすには、以下のスキル／コマンドを事前にイン
 /trinity:run 認証モジュールを JWT からセッション Cookie に移行する。
 ```
 
-複数 Issue を同時に指定できる。Orchestrator が要件から依存関係・並列可否を判断し、いま起動できる Issue だけをシェルに渡して並列に走らせる。先行の完了を待つ後続 Issue は、先行が終端に達してから追いかける。単発 Issue のことも、そもそも Issue として切らないことも、Trinity 実施後にそのまま修正に入ることもある。いずれの場合も各 Issue は独立した PR として残し、統合（マージ）はしない。
+複数 Issue を同時に指定できる。Orchestrator が要件から依存関係・並列可否を判断し、いま起動できる Issue だけをシェルに渡して並列に走らせる。先行の完了を待つ後続 Issue は、先行が終端に達してから追いかける。単発 Issue のことも、そもそも Issue として切らないことも、Trinity 実施後にそのまま修正に入ることもある。いずれの場合も各 Issue は独立した PR として残し、PR 作成後にユーザーが選択したものだけをマージする。
 
 ```shell
 /trinity:run #12 #15 #20
 ```
 
-`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は `AskUserQuestion` で修正要否・課題起票・クリーンアップを都度確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
+`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後はマージ候補のヒアリングを行い、その後 `AskUserQuestion` で課題起票・クリーンアップをまとめて確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
 
 ## Release
 
