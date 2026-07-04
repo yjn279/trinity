@@ -8,10 +8,11 @@
 
 | 仕様 | 内容 |
 | :-- | :-- |
-| 処理フロー | 3アクター（Planner・Generator・Evaluator）と Tools による検証を、Worktree と git-flow の上で回す |
+| 処理フロー | 3アクター（Planner・Generator・Evaluator）と Tools による検証で、1つの収束ループを回す |
+| Worktree 実行 | 各作業単位を git-flow で切り出した独立した worktree の中で実行する。worktree は依存関係に応じて直列にも並列にも組める（README の Processing Flow の図を参照） |
 | AskUserQuestion | 設計の分岐はフォアグラウンドの Orchestrator が `AskUserQuestion` で解消し、背景アクターは `ask/q`・`ask/a` のファイルチャネルを経由して間接的に確認する |
 | サブエージェント起動 | Planner・Generator・Evaluator はそれぞれの作業のなかでさらにサブエージェントを呼べる |
-| ワークフローの柔軟性 | 複数 Issue の並列・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応し、単一 worktree のことも複数 worktree にまたがることもある |
+| ワークフローの柔軟性 | 複数 Issue・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する |
 | 中断からの再開 | 実行が中断（使用量上限・レートリミット・障害など）しても、到達済みの工程をやり直さず中断点から再開する |
 
 ## Policies
