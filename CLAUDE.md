@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## このリポジトリの性質
+## Overview
 
 これはアプリケーションではなく Claude Code プラグインである。実体はマークダウンのプロンプト定義と、それを駆動するシェルのハーネスである。`package.json` も依存関係もない。 `settings.json` は意図的にスキーマ宣言だけを置き、ツールの事前承認は利用側の `~/.claude/` ユーザー設定に委ねる。
 
@@ -13,24 +13,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 最善の実装は、実装しないことである。機能追加には実装コストや保守コストが発生する。
 ビルドトラップに陥らず本当に必要な機能のみを実装し、まずは実装しない解決策を検討する。
 
-### 簡素化の進め方
+### Process
 
 1. **着手前に「シンプル」を複数観点で定義する。** 方向（概念を減らす・重複を消す・挙動は保つ）とガードレール（確定仕様を割らない・検証を通す）で示し、数値で縛らない。
 2. **確定仕様を物差しに必要十分性を測り、辿れないものを削除候補にする。**
 3. **削る前に確認する。** 仕様外は本当に不要か（監視性・再開など運用上有用なことがある）、重複なら消すのは正典でない側か。
 4. **挙動を保ち、削った後に検証する。**
 
-### 簡素化のヒューリスティクス
+### Heuristics
 
 - **仕様外のノブ・分岐・特例を削る。** デフォルトで固定して無くせないかをまず問う。
 - **判断と配管を分ける。** 判断はデータ（`backlog.tsv` の行数）に逃がし、シェルは起動と監視に徹する。
 - **footgun を削る。** 暗黙の前提は頑健化して特例知識を不要にする。
 
-## 変更の検証方法
+## Verification
 
 自動テストはない。シェルを書き換えたら最低限 `bash -n` と `shellcheck -S warning` を通す。挙動の確認は、このプラグインを入れた別プロジェクト（または使い捨ての作業ツリー）で実際に `/trinity:run` を小さな要件で回し、各アクターの出力と制御フローを観察して行う。書き換えた部品が解決していた失敗モードを再現できるか、あるいは不要になったかで評価する。
 
-## アーキテクチャ
+## Architecture
 
 オーケストレーターとアクター3者で構成され、各アクターは固有のシステムプロンプトと新鮮なコンテキストを持つ。役割を1つに統合しないのは、コンテキストが膨らむほどドリフトが起き、評価者が自分のコードを甘く見るためである。Orchestrator はメイン会話のフォアグラウンドの Claude、Planner・Generator・Evaluator はシェルのハーネスが `claude -p` の子プロセスとして起動する。それぞれの責務と frontmatter を以下に示す。
 
@@ -57,7 +57,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
 | Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
 
-## 守るべき不変条件
+## Invariants
 
 ハーネスの正しさは、複数ファイルにまたがる以下の規約に依存する。プロンプトを書き換えるときも崩さない。
 
@@ -73,11 +73,11 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・`backlog.tsv`・各ランの `plan.md`・`tasks.tsv`・ループごとのスナップショット `plan-*.md`・`eval-*.md`・`gen-*.md`・`review-*.md`・`simplify-*.md`・`verify-*.md`・`status`・`planner-*.out`・`gen-*.out`・`evaluator-*.out`・`pipeline.out`）はデバッグのためクリーンアップで削除しない。 |
 | 3値判定 | Evaluator は `eval-<n>.md` 先頭行 `VERDICT:` に `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。 |
 
-## 編集時の規約
+## Conventions
 
 agent 定義とプロンプトを書き換える際の約束を以下に示す。
 
-- ドキュメントとプロンプトはすべて日本語で書き、既存のトーンに合わせる。
+- 見出しは英語（1〜3語）で、本文と説明は日本語で書き、既存のトーンに合わせる。
 - シェルは `bash`・`set -euo pipefail` を前提に書き、`shellcheck -S warning` を通す。アクターの振る舞いは `agents/<role>.md` を単一の正とし、`lib/actors.sh` に処理ロジックは寄せても振る舞いの指示は二重化しない。
 - 配布メタデータを変えるときは `.claude-plugin/plugin.json` と `.claude-plugin/marketplace.json` の `name` を揃える。バージョンの単一の正は `plugin.json` の `version` フィールドであり、`version` の更新は release-please が `extra-files` 経由でリリース PR のマージ時に自動で行う（`marketplace.json` に `version` フィールドは持たせない）。現行バージョンの記録は `.release-please-manifest.json` が担う。リリース手順の詳細は `docs/release.md` を参照する。
 - コミット・PR タイトルは Conventional Commits 接頭辞（`feat:`・`fix:`・`feat!:` など）を付けた日本語命令形で書く（例： `feat: release-please でリリースを自動化する`）。release-please はこの接頭辞からバージョン増分（patch / minor / major）を算出するため、接頭辞は必須である。PR 番号は squash merge が自動付与するため本文に手書きしない。
