@@ -23,7 +23,8 @@ trinity::log() {
 }
 
 # trinity::status STATE — 状態を1語で RUN_DIR/status に記録する。
-# 取りうる値: planning generating reviewing evaluating needs-input passed needs-revision failed error
+# 取りうる値: planning generating reviewing evaluating needs-input needs-revision revising passed failed error
+# passed/failed/error のみ終端。failed はループ上限到達を表し、FAIL 判定（継続）は revising を使う。
 trinity::status() {
   printf '%s\n' "$1" > "${RUN_DIR}/status"
   trinity::log "status -> $1"
@@ -193,7 +194,7 @@ trinity::evaluate() {
   case "${verdict}" in
     PASS)           trinity::status passed;        return 0 ;;
     NEEDS_REVISION) trinity::status needs-revision; return 2 ;;
-    FAIL)           trinity::status failed;         return 3 ;;
+    FAIL)           trinity::status revising;       return 3 ;;
     *)              trinity::status error;          return 1 ;;
   esac
 }
