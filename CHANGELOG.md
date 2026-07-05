@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/yjn279/trinity/compare/v0.3.0...v0.4.0) (2026-07-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* エージェント構成と通信プロトコルを再設計した。
+
+### Features
+
+* Milestone v0.3.0 — 前提自動セットアップ・マージ機能化・確認集約・用語参照 ([#73](https://github.com/yjn279/trinity/issues/73)) ([20ca016](https://github.com/yjn279/trinity/commit/20ca0163ad20d3bc5fcb231fe9290329fccdb5ff))
+* 内側ループをシェルへ機械化し組み込みコマンドを Evaluator の道具へ再構築する ([4bf7ab5](https://github.com/yjn279/trinity/commit/4bf7ab5885f5f3b990cda3947884e952fdc46ded))
+
 ## [0.3.0](https://github.com/yjn279/trinity/compare/v0.2.0...v0.3.0) (2026-06-07)
 
 
