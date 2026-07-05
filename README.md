@@ -92,7 +92,7 @@ flowchart LR
 | `NEEDS_REVISION` | 計画・要件が誤り。Planner が再計画する。要件自体が疑わしければ Planner が `## 要確認の論点` でユーザーに差し戻す |
 | `FAIL` | 既存計画の範囲内で Generator が修正する |
 
-`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。Git Issue が提示された場合は、作成した PR 群を `AskUserQuestion` でマージ候補として提示し、選択されたものをマージしたうえで、課題起票・クリーンアップを確認する。計画中に設計分岐が見つかった場合、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
+`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。PR 確定後は1回の `AskUserQuestion` コール（最大4問）でマージ候補・課題起票・クリーンアップ許可をまとめて確認する。マージ候補の問いは Git Issue が提示された場合だけ提示し、選択された PR をマージしたうえで、依存順（マージ→課題起票→クリーンアップ）で処理する。計画中に設計分岐が見つかった場合、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
 
 ## Prerequisites
 
@@ -121,7 +121,7 @@ Trinity を動かすには、以下のスキル／コマンドが必要である
 /trinity:run #12 #15 #20
 ```
 
-`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後はマージ候補のヒアリングを行い、その後 `AskUserQuestion` で課題起票・クリーンアップをまとめて確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
+`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は1回の `AskUserQuestion` コールでマージ候補・課題起票・クリーンアップ許可をまとめて確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
 
 ## Release
 
