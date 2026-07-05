@@ -92,7 +92,7 @@ flowchart LR
 | `NEEDS_REVISION` | 計画・要件が誤り。Planner が再計画する。要件自体が疑わしければ Planner が `## 要確認の論点` でユーザーに差し戻す |
 | `FAIL` | 既存計画の範囲内で Generator が修正する |
 
-`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。作成した PR 群は `AskUserQuestion` でマージ候補として提示し、選択されたものをマージしたうえで、課題起票・クリーンアップを確認する。計画中に設計分岐が見つかった場合、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
+`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。Git Issue が提示された場合は、作成した PR 群を `AskUserQuestion` でマージ候補として提示し、選択されたものをマージしたうえで、課題起票・クリーンアップを確認する。計画中に設計分岐が見つかった場合、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
 
 ## Prerequisites
 

@@ -13,7 +13,7 @@
 | AskUserQuestion | 設計の分岐はフォアグラウンドの Orchestrator が `AskUserQuestion` で解消し、背景アクターは `ask/q`・`ask/a` のファイルチャネルを経由して間接的に確認する |
 | サブエージェント起動 | Planner・Generator・Evaluator はそれぞれの作業のなかでさらにサブエージェントを呼べる |
 | ワークフローの柔軟性 | 複数 Issue・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する |
-| PR マージ | 各 Issue を独立した PR として作成し、`AskUserQuestion` で提示したマージ候補のうちユーザーが選択したものをマージする |
+| PR マージ | Git Issue が提示された場合は、各 Issue を独立した PR として作成し、`AskUserQuestion` で提示したマージ候補のうちユーザーが選択したものをマージする |
 | 課題起票 | 対象リポジトリと Trinity 本体それぞれの改善課題を `AskUserQuestion` で起票提案し、選択された課題を Issue として登録する |
 | 中断からの再開 | 実行が中断（使用量上限・レートリミット・障害など）しても、到達済みの工程をやり直さず中断点から再開する |
 
