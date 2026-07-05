@@ -121,7 +121,7 @@ Trinity を動かすには、以下のスキル／コマンドが必要である
 /trinity:run #12 #15 #20
 ```
 
-`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。PR 確定後は1回の `AskUserQuestion` コールでマージ候補・課題起票・クリーンアップ許可をまとめて確認する。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
+`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。マージ候補・課題起票・クリーンアップ許可の確認は前述の1回の `AskUserQuestion` コールで行う。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、`trinity supervise` を再実行することで未起動の Issue を起動し、各 Issue の `loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
 
 ## Release
 
