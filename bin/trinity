@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# bin/trinity — Trinity シェルハーネス唯一の実行ファイル。
+#
+# サブコマンド:
+#   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
+#       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
+#       確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
+#       再起動時は RUN_DIR の既存成果物から中断点を判定して再開する。
+#   supervise <SESSION_DIR>
+#       backlog.tsv（slug・worktree・branch・title）の各行を背景起動し、
+#       needs-input か done のイベントまでブロックして STATUS 表と EVENT: を返す。
+
+set -euo pipefail
+
+TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export TRINITY_ROOT
+
+trinity::usage() {
+  [ -n "${1:-}" ] && printf 'trinity: %s\n' "$1" >&2
+  printf '使い方:\n  trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>\n  trinity supervise <SESSION_DIR>\n' >&2
+  exit 1
+}
+
+SUBCOMMAND="${1:-}"
+case "${SUBCOMMAND}" in
+  loop | supervise) shift ;;
+  "") trinity::usage "サブコマンドが必要です" ;;
+  *)  trinity::usage "未知のサブコマンド: ${SUBCOMMAND}" ;;
+esac
+
+# --- loop — 1 Issue の収束ループ -------------------------------------------
+loop_main() {
+  local RUN_DIR WORKTREE_DIR BRANCH
+  RUN_DIR="${1:?usage: trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>}"
+  WORKTREE_DIR="${2:?WORKTREE_DIR required}"
+  BRANCH="${3:?BRANCH required}"
+  export RUN_DIR WORKTREE_DIR BRANCH
+
+  mkdir -p "${RUN_DIR}/ask"
+  # shellcheck source=lib/actors.sh
+  . "${TRINITY_ROOT}/lib/actors.sh"
+
+  : "${TRINITY_MAX_LOOPS:=5}"
+
+  # 設計分岐の確認: plan.md の `## 要確認の論点` を ask/q に出し、回答（ask/a）を待つ。
+  # 人間の確認に締切は設けない（回答が来るまで安価に待つ）。
+  loop::ask() {
+    local loop="$1"
+    awk '/^## 要確認の論点/{p=1;print;next} p&&/^## /{p=0} p' \
+      "${RUN_DIR}/plan.md" > "${RUN_DIR}/ask/q"
+    rm -f "${RUN_DIR}/ask/a"
+    trinity::status needs-input
+    trinity::log "ループ ${loop}: 確認待ち（ask/q を Orchestrator が拾う）"
+    while [ ! -f "${RUN_DIR}/ask/a" ]; do sleep 5; done
+    { printf '\n## 確定事項（ループ %s で確認済み）\n' "${loop}"; cat "${RUN_DIR}/ask/a"; } \
+      >> "${RUN_DIR}/requirement.md"
+    rm -f "${RUN_DIR}/ask/q" "${RUN_DIR}/ask/a"
+  }
+
+  # RUN_DIR の既存成果物から再開ループ番号とモードを返す。
+  # 出力形式: "<n> <mode>"（例: "2 plan"）。PASS 済みのときは "PASS" のみ。
+  # 各段は自己スキップするため入口判定は不要。
+  loop::resume_point() {
+    local k=0 k_verdict="" num="" verdict="" f
+    for f in "${RUN_DIR}"/eval-*.md; do
+      [ -f "$f" ] || continue
+      num="${f##*/eval-}"
+      num="${num%.md}"
+      case "${num}" in *[!0-9]*) continue ;; esac
+      verdict="$(trinity::verdict_of "$f")"
+      case "${verdict}" in
+        PASS | NEEDS_REVISION | FAIL) ;;
+        *) continue ;;
+      esac
+      if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
+    done
+
+    if [ "${k}" -eq 0 ]; then
+      printf '1 plan\n'; return
+    fi
+    [ "${k_verdict}" = PASS ] && { printf 'PASS\n'; return; }
+
+    local n mode
+    n=$((k + 1))
+    case "${k_verdict}" in
+      NEEDS_REVISION) mode=plan ;;
+      *)              mode=revise ;;
+    esac
+    printf '%s %s\n' "${n}" "${mode}"
+  }
+
+  trinity::log "loop 開始: ${BRANCH}"
+
+  local resume loop mode rc
+  resume="$(loop::resume_point)"
+  if [ "${resume}" = PASS ]; then
+    trinity::log "再開判定: 既に PASS 済み。再実行しない。"
+    trinity::status passed
+    exit 0
+  fi
+  read -r loop mode <<< "${resume}"
+  [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
+
+  while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
+    if [ "${mode}" = plan ]; then
+      rc=0
+      trinity::plan "${loop}" || rc=$?
+      if [ "${rc}" -eq "${TRINITY_RC_NEEDS_INPUT}" ]; then
+        loop::ask "${loop}"
+        continue
+      fi
+      [ "${rc}" -ne 0 ] && exit 1
+      trinity::generate "${loop}"
+    else
+      trinity::revise "${loop}"
+    fi
+
+    trinity::tools "${loop}"
+
+    rc=0
+    trinity::evaluate "${loop}" || rc=$?
+    case "${rc}" in
+      0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; exit 0 ;;
+      2) mode=plan ;;    # NEEDS_REVISION → 再計画
+      3) mode=revise ;;  # FAIL → 既存計画の範囲内で修正
+      *) exit 1 ;;
+    esac
+    loop=$((loop + 1))
+  done
+
+  trinity::status failed
+  trinity::log "${TRINITY_MAX_LOOPS} ループで PASS に到達しなかった"
+  exit 2
+}
+
+# --- supervise — Issue 群の起動＋監視 --------------------------------------
+# 並列数は Orchestrator が backlog に書く行数で決まる（シェルは上限を持たない）。
+supervise_main() {
+  local SESSION_DIR BACKLOG
+  SESSION_DIR="${1:?usage: trinity supervise <SESSION_DIR>}"
+  BACKLOG="${SESSION_DIR}/backlog.tsv"
+
+  local _bwait=0
+  while [ ! -f "${BACKLOG}" ]; do
+    sleep 1
+    _bwait=$((_bwait + 1))
+    if [ "${_bwait}" -ge 30 ]; then
+      printf 'supervise: backlog.tsv が見つからない: %s\n' "${BACKLOG}" >&2
+      exit 1
+    fi
+  done
+
+  status_of() {
+    local f="${SESSION_DIR}/$1/status"
+    [ -f "$f" ] && printf '%s\n' "$(< "$f")" || echo "-"
+  }
+
+  print_status() {
+    printf 'STATUS\n'
+    while IFS=$'\t' read -r slug _rest; do
+      { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue
+      printf '  %s\t%s\n' "${slug}" "$(status_of "${slug}")"
+    done < "${BACKLOG}"
+  }
+
+  # backlog の各行を背景起動する（既に status がある行は再起動しない）。
+  local launched=0 slug worktree branch title run_dir
+  while IFS=$'\t' read -r slug worktree branch title; do
+    { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue   # 空行・ヘッダ行を飛ばす
+    [ -f "${SESSION_DIR}/${slug}/status" ] && continue
+    run_dir="${SESSION_DIR}/${slug}"
+    mkdir -p "${run_dir}"
+    printf 'queued\n' > "${run_dir}/status"
+    printf 'supervise: launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}" >&2
+    nohup "${TRINITY_ROOT}/bin/trinity" loop "${run_dir}" "${worktree}" "${branch}" \
+      >> "${run_dir}/pipeline.out" 2>&1 &
+    printf '%s\n' "$!" > "${run_dir}/pid"
+    launched=$((launched + 1))
+  done < "${BACKLOG}"
+  printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
+
+  # needs-input（確認待ち）か、全 Issue が終端（done）になるまで監視する。
+  local needs_input running s
+  while :; do
+    needs_input=""
+    running=0
+    while IFS=$'\t' read -r slug _rest; do
+      { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue
+      s="$(status_of "${slug}")"
+      case "${s}" in
+        needs-input)             needs_input="${needs_input} ${slug}" ;;
+        passed | failed | error) ;;
+        *)                       running=$((running + 1)) ;;
+      esac
+    done < "${BACKLOG}"
+
+    if [ -n "${needs_input}" ]; then
+      print_status
+      for slug in ${needs_input}; do
+        printf 'ISSUE: %s\tQ: %s/%s/ask/q\n' "${slug}" "${SESSION_DIR}" "${slug}"
+      done
+      printf 'EVENT: needs-input\n'
+      exit 0
+    fi
+
+    if [ "${running}" -eq 0 ]; then
+      print_status
+      printf 'EVENT: done\n'
+      exit 0
+    fi
+
+    sleep 5
+  done
+}
+
+# --- ディスパッチ -------------------------------------------------------------
+case "${SUBCOMMAND}" in
+  loop)      loop_main "$@" ;;
+  supervise) supervise_main "$@" ;;
+esac
