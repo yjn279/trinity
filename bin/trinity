@@ -6,6 +6,8 @@
 #       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
 #       確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
 #       再起動時は RUN_DIR の既存成果物から中断点を判定して再開する。
+#       RUN_DIR/redrive があれば修正要望として requirement.md に追記し、最大 eval 番号 + 1
+#       から plan モードで、その開始ループから TRINITY_MAX_LOOPS 回ぶんの予算で再収束する。
 #   supervise <SESSION_DIR>
 #       backlog.tsv（slug・worktree・branch・title）の各行を背景起動し、
 #       needs-input か done のイベントまでブロックして STATUS 表と EVENT: を返す。
@@ -60,6 +62,8 @@ loop_main() {
   # RUN_DIR の既存成果物から再開ループ番号とモードを返す。
   # 出力形式: "<n> <mode>"（例: "2 plan"）。PASS 済みのときは "PASS" のみ。
   # 各段は自己スキップするため入口判定は不要。
+  # REDRIVE=1（redrive マーカーを消費済み）のときは PASS 短絡を行わず、
+  # 最大 eval 番号 + 1 を常に plan モードで返す（修正要望による再収束）。
   loop::resume_point() {
     local k=0 k_verdict="" num="" verdict="" f
     for f in "${RUN_DIR}"/eval-*.md; do
@@ -74,6 +78,10 @@ loop_main() {
       esac
       if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
     done
+
+    if [ "${REDRIVE}" -eq 1 ]; then
+      printf '%s plan\n' "$((k + 1))"; return
+    fi
 
     if [ "${k}" -eq 0 ]; then
       printf '1 plan\n'; return
@@ -91,6 +99,17 @@ loop_main() {
 
   trinity::log "loop 開始: ${BRANCH}"
 
+  # redrive マーカーがあれば修正要望を requirement.md へ追記して消費する
+  # （ask/a を requirement.md へ追記する既存作法に倣う）。以降の resume_point は
+  # この REDRIVE フラグで PASS 短絡を回避する。
+  local REDRIVE=0
+  if [ -f "${RUN_DIR}/redrive" ]; then
+    { printf '\n## 修正要望（re-drive）\n'; cat "${RUN_DIR}/redrive"; } >> "${RUN_DIR}/requirement.md"
+    rm -f "${RUN_DIR}/redrive"
+    REDRIVE=1
+    trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する"
+  fi
+
   local resume loop mode rc
   resume="$(loop::resume_point)"
   if [ "${resume}" = PASS ]; then
@@ -101,7 +120,12 @@ loop_main() {
   read -r loop mode <<< "${resume}"
   [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
 
-  while [ "${loop}" -le "${TRINITY_MAX_LOOPS}" ]; do
+  # re-drive は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの予算を
+  # 相対的に与える（通常の crash-resume は従来どおり絶対上限のまま）。
+  local max_loop="${TRINITY_MAX_LOOPS}"
+  [ "${REDRIVE}" -eq 1 ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
+
+  while [ "${loop}" -le "${max_loop}" ]; do
     if [ "${mode}" = plan ]; then
       rc=0
       trinity::plan "${loop}" || rc=$?
@@ -129,7 +153,7 @@ loop_main() {
   done
 
   trinity::status failed
-  trinity::log "${TRINITY_MAX_LOOPS} ループで PASS に到達しなかった"
+  trinity::log "ループ ${max_loop} まで回したが PASS に到達しなかった"
   exit 2
 }
 
@@ -163,12 +187,15 @@ supervise_main() {
     done < "${BACKLOG}"
   }
 
-  # backlog の各行を背景起動する（既に status がある行は再起動しない）。
+  # backlog の各行を背景起動する（既に status がある行は再起動しない。ただし
+  # redrive マーカーがあれば修正要望の再収束のため例外的に再起動する）。
   local launched=0 slug worktree branch title run_dir
   while IFS=$'\t' read -r slug worktree branch title; do
     { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue   # 空行・ヘッダ行を飛ばす
-    [ -f "${SESSION_DIR}/${slug}/status" ] && continue
     run_dir="${SESSION_DIR}/${slug}"
+    if [ -f "${run_dir}/status" ] && [ ! -f "${run_dir}/redrive" ]; then
+      continue
+    fi
     mkdir -p "${run_dir}"
     printf 'queued\n' > "${run_dir}/status"
     printf 'supervise: launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}" >&2
