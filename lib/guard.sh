@@ -17,13 +17,32 @@
 set -euo pipefail
 
 # guard::json_field KEY JSON — "KEY":"value" 形の文字列値を1つ抜き出す（最小限のJSONパーサ）。
-# JSON エスケープ（\" や \\）を跨いで値の終端を誤検出しないよう ([^"\\]|\\.)* で1トークン化する。
+# JSON エスケープ（\" や \\）を跨いで値の終端を誤検出しないよう ([^"\\]|\\.)* で1トークン化し、
+# 抜き出した生トークンは guard::json_unescape でデコードしてから返す（抽出とデコードの責務を分離）。
 guard::json_field() {
-  local key="$1" json="$2"
-  printf '%s' "$json" \
+  local key="$1" json="$2" raw
+  raw="$(printf '%s' "$json" \
     | grep -Eo '"'"$key"'"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' \
     | head -1 \
-    | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//; s/"$//'
+    | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//; s/"$//')"
+  guard::json_unescape "$raw"
+}
+
+# guard::json_unescape STRING — JSON文字列エスケープ（\n \t \r \" \/ \\）を実文字へ復元する。
+# \\ は先にプレースホルダへ退避してから他のエスケープを展開し、最後に単一の \ へ戻すことで、
+# 元の文字列に含まれていた素の \ を誤ってエスケープシーケンスとして再解釈しないようにする。
+# 例えばコマンド中の物理改行はJSON化の際 \n（バックスラッシュ+n の2文字）に変換されるため、
+# これをデコードしないと guard::split_segments に渡る文字列に実改行が現れず分割対象から漏れる。
+guard::json_unescape() {
+  local s="$1"
+  s="${s//\\\\/$'\x01'}"
+  s="${s//\\n/$'\n'}"
+  s="${s//\\t/$'\t'}"
+  s="${s//\\r/$'\r'}"
+  s="${s//\\\"/\"}"
+  s="${s//\\\///}"
+  s="${s//$'\x01'/\\}"
+  printf '%s' "$s"
 }
 
 # guard::deny REASON — deny 決定のJSONを標準出力へ書き、スクリプトを正常終了する。
@@ -32,11 +51,14 @@ guard::deny() {
   exit 0
 }
 
-# guard::split_segments COMMAND — ; && || | で連結されたコマンド文字列を1コマンドずつへ分割する。
-# 長い区切り（|| / &&）を単一の | より先に処理し、連結記号の誤爆を避ける。
+# guard::split_segments COMMAND — ; && || | および物理改行で連結されたコマンド文字列を
+# 1コマンドずつへ分割する。長い区切り（|| / &&）を単一の | より先に処理し、連結記号の誤爆を
+# 避ける。\r は \n に正規化してから渡すため、guard::json_unescape が復元した実改行（LLM が
+# 1回のBash呼び出しで複数コマンドを改行区切りで書く典型パターン）も呼び出し側の `while read -r`
+# が1行＝1セグメントとして確実に読み取れる。
 # 出力は必ず末尾改行を持たせる（`while read` が最終行を読み飛ばすのを防ぐ）。
 guard::split_segments() {
-  printf '%s\n' "$1" | sed -e 's/||/\n/g' -e 's/&&/\n/g' -e 's/;/\n/g' -e 's/|/\n/g'
+  printf '%s\n' "$1" | sed -e 's/\r/\n/g' -e 's/||/\n/g' -e 's/&&/\n/g' -e 's/;/\n/g' -e 's/|/\n/g'
 }
 
 # guard::git_subcommand TOKENS... — `git` コマンドのサブコマンドを抽出する。
@@ -101,19 +123,65 @@ guard::check_bash() {
   done < <(guard::split_segments "$command")
 }
 
+# guard::normalize_path PATH — "." "/" の連続や ".." を解決した正規パスを返す（依存追加を避け、
+# ファイル非存在でも解決できるよう `realpath` は使わず bash 文字列処理のみで完結させる）。
+# 絶対パス（先頭 "/"）では ".." がルートを超えて遡らないようにし、相対パスではそのまま残す。
+guard::normalize_path() {
+  local path="$1" component rest result="" abs=0
+  [ "${path:0:1}" = "/" ] && abs=1
+  rest="$path"
+  while [ -n "$rest" ]; do
+    component="${rest%%/*}"
+    if [ "$component" = "$rest" ]; then
+      rest=""
+    else
+      rest="${rest#*/}"
+    fi
+    case "$component" in
+      ''|'.') continue ;;
+      '..')
+        if [ -n "$result" ]; then
+          case "$result" in
+            ..|*/..) result="${result}/.." ;;
+            */*) result="${result%/*}" ;;
+            *) result="" ;;
+          esac
+        elif [ "$abs" -eq 0 ]; then
+          result=".."
+        fi
+        ;;
+      *)
+        if [ -z "$result" ]; then
+          result="$component"
+        else
+          result="${result}/${component}"
+        fi
+        ;;
+    esac
+  done
+  if [ "$abs" -eq 1 ]; then
+    printf '/%s' "$result"
+  else
+    printf '%s' "$result"
+  fi
+}
+
 # guard::check_write ROLE FILE_PATH — Write/Edit の file_path 制約を判定する。
 # evaluator は読み取り専用として全面拒否、planner は RUN_DIR 内のみ許可、generator は制約なし。
+# RUN_DIR 包含判定は文字列プレフィックス一致だけだと "${RUN_DIR}/../outside.sh" のような ".."
+# を含む脱出を見逃すため、判定前に guard::normalize_path で双方を正規化する。
 guard::check_write() {
-  local role="$1" file_path="$2" run_dir
+  local role="$1" file_path="$2" run_dir normalized_path normalized_run_dir
   case "$role" in
     evaluator)
       guard::deny "role=evaluator は読み取り専用でありWrite/Editを実行できない"
       ;;
     planner)
       run_dir="${RUN_DIR:-}"
-      run_dir="${run_dir%/}"
-      case "$file_path" in
-        "${run_dir}"|"${run_dir}"/*) : ;;
+      normalized_run_dir="$(guard::normalize_path "${run_dir%/}")"
+      normalized_path="$(guard::normalize_path "$file_path")"
+      case "$normalized_path" in
+        "${normalized_run_dir}"|"${normalized_run_dir}"/*) : ;;
         *)
           guard::deny "role=plannerはRUN_DIR外への書き込みができない: ${file_path}"
           ;;
