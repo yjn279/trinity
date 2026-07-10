@@ -36,12 +36,21 @@ trinity::agent_body() {
   awk 'NR==1 && $0=="---"{f=1;next} f && $0=="---"{f=0;next} !f{print}' "$file"
 }
 
-# trinity::claude MODEL CWD PROMPT — headless な claude を1回起動し標準出力を返す。
-# CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可する。
+# trinity::guard_settings — lib/guard.sh を PreToolUse フックとして注入する --settings JSON。
+# 役割ごとの許否は TRINITY_ROLE（env）で guard.sh 自身が分岐するため、JSON 自体は共通でよい。
+trinity::guard_settings() {
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Bash|Write|Edit","hooks":[{"type":"command","command":"%s/lib/guard.sh"}]}]}}' \
+    "${TRINITY_ROOT}"
+}
+
+# trinity::claude ROLE MODEL CWD PROMPT — headless な claude を1回起動し標準出力を返す。
+# CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可しつつ、
+# lib/guard.sh を PreToolUse フックとして per-actor 注入し役割境界を機構として enforce する。
 trinity::claude() {
-  local model="$1" cwd="$2" prompt="$3"
-  ( cd "$cwd" && env -u CLAUDECODE claude -p "$prompt" \
-      --model "$model" --permission-mode bypassPermissions )
+  local role="$1" model="$2" cwd="$3" prompt="$4"
+  ( cd "$cwd" && env -u CLAUDECODE TRINITY_ROLE="$role" claude -p "$prompt" \
+      --model "$model" --permission-mode bypassPermissions \
+      --settings "$(trinity::guard_settings)" )
 }
 
 # trinity::verdict_of FILE — eval-*.md から VERDICT の値（PASS/NEEDS_REVISION/FAIL）を返す。
@@ -99,7 +108,7 @@ trinity::plan() {
   rm -f "${RUN_DIR}/tasks.tsv"
   local prompt
   prompt="$(trinity::agent_body planner)$(trinity::context "$loop")"
-  trinity::claude "${TRINITY_PLANNER_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+  trinity::claude planner "${TRINITY_PLANNER_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/planner-${loop}.out" 2>&1 || true
   if [ ! -f "${RUN_DIR}/plan.md" ]; then
     trinity::status error; return 1
@@ -137,7 +146,7 @@ trinity::generate() {
 - TaskTotal: ${total}
 - TaskTitle: ${title}
 - TaskFiles: ${files}"
-    trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+    trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
       > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
     trinity::assert_commit "${pre_sha}" "generate task ${idx}"
   done < "${RUN_DIR}/tasks.tsv"
@@ -155,7 +164,7 @@ trinity::revise() {
   pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
 - 修正モード: ${RUN_DIR}/eval-$((loop - 1)).md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
-  trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
   trinity::assert_commit "${pre_sha}" "revise"
 }
@@ -164,18 +173,19 @@ trinity::revise() {
 trinity::tools() {
   local loop="$1" base; base="$(trinity::base)"
   trinity::status reviewing
-  trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
+  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
     "/code-review --fix ${base}..HEAD" > "${RUN_DIR}/review-${loop}.md" 2>&1 \
     || trinity::log "WARN: /code-review --fix が非ゼロで終了した"
-  trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
+  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
     "/simplify" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 \
     || trinity::log "WARN: /simplify が非ゼロで終了した"
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
+  # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
     git -C "${WORKTREE_DIR}" add -A || true
     git -C "${WORKTREE_DIR}" commit -q -m "chore: 道具の自動修正を反映する" || true
   fi
-  trinity::claude "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
+  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
     "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。" \
     > "${RUN_DIR}/verify-${loop}.md" 2>&1 \
     || trinity::log "WARN: /verify が非ゼロで終了した"
@@ -188,7 +198,7 @@ trinity::evaluate() {
   prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
 - ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
 - 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
-  trinity::claude "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+  trinity::claude evaluator "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/evaluator-${loop}.out" 2>&1 || true
   verdict="$(trinity::verdict_of "${RUN_DIR}/eval-${loop}.md")"
   case "${verdict}" in
