@@ -87,16 +87,122 @@ guard::is_mutating_git() {
   esac
 }
 
-# guard::check_bash ROLE COMMAND — Bash ツールの git コマンドを意味解析し、役割プロファイルに
-# 反していれば deny する。cd <dir> && git ... の形は連結分割後、cd 側の segment が
-# git_subcommand で非git判定（continue）となり、git 側 segment だけが評価される。
-guard::check_bash() {
-  local role="$1" command="$2" segment result sub rest
+# guard::strip_subs COMMAND — コマンド置換 $(...) とバッククォート `...`（その区切り文字ごと）
+# を1個の空白へ置き換えて返す。外側のコマンド（例: `git commit -m "$(...)"` の `git commit`）
+# を、置換内部の `;`/`&&` 等でセグメント分割を乱されずに評価できるようにする前処理。
+# 置換の中身自体は guard::extract_subs が独立したセグメントとして別途評価するため、ここでは
+# 中身の内容は捨ててよい（深さの対応付けは char-by-char のバランス走査で行う）。
+guard::strip_subs() {
+  local s="$1" i=0 c out="" j depth cc
+  local len=${#s}
+  while [ "$i" -lt "$len" ]; do
+    c="${s:$i:1}"
+    if [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = '(' ]; then
+      depth=1
+      j=$((i + 2))
+      while [ "$j" -lt "$len" ] && [ "$depth" -gt 0 ]; do
+        cc="${s:$j:1}"
+        [ "$cc" = '(' ] && depth=$((depth + 1))
+        [ "$cc" = ')' ] && depth=$((depth - 1))
+        j=$((j + 1))
+      done
+      out="${out} "
+      i=$j
+    elif [ "$c" = '`' ]; then
+      j=$((i + 1))
+      while [ "$j" -lt "$len" ] && [ "${s:$j:1}" != '`' ]; do
+        j=$((j + 1))
+      done
+      out="${out} "
+      i=$((j + 1))
+    else
+      out="${out}${c}"
+      i=$((i + 1))
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# guard::extract_subs COMMAND — コマンド置換 $(...) / バッククォート `...` の中身を、
+# ネストも含め再帰的に1行ずつ標準出力へ書く。中身自体がさらに独立したコマンド文字列で
+# あり得る（`;`/`&&`/改行を含みうる）ため、呼び出し側は各行を guard::scan_target に通す。
+guard::extract_subs() {
+  local s="$1" i=0 c j depth cc inner
+  local len=${#s}
+  while [ "$i" -lt "$len" ]; do
+    c="${s:$i:1}"
+    if [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = '(' ]; then
+      depth=1
+      j=$((i + 2))
+      while [ "$j" -lt "$len" ] && [ "$depth" -gt 0 ]; do
+        cc="${s:$j:1}"
+        [ "$cc" = '(' ] && depth=$((depth + 1))
+        [ "$cc" = ')' ] && depth=$((depth - 1))
+        j=$((j + 1))
+      done
+      inner="${s:$((i + 2)):$((j - 1 - (i + 2)))}"
+      printf '%s\n' "$inner"
+      guard::extract_subs "$inner"
+      i=$j
+    elif [ "$c" = '`' ]; then
+      j=$((i + 1))
+      while [ "$j" -lt "$len" ] && [ "${s:$j:1}" != '`' ]; do
+        j=$((j + 1))
+      done
+      inner="${s:$((i + 1)):$((j - (i + 1)))}"
+      printf '%s\n' "$inner"
+      guard::extract_subs "$inner"
+      i=$((j + 1))
+    else
+      i=$((i + 1))
+    fi
+  done
+}
+
+# guard::strip_wrappers SEGMENT — 前後の空白と、サブシェル/グループ化の外側の括弧
+# `( ... )` / `{ ... }` を1組ずつ剥がす（ネストがあれば繰り返し剥がす）。
+# `(git push)` / `( git push )` のような形の実コマンドを露出させるための前処理であり、
+# 剥がした後の文字列に対して通常どおり単語分割してサブコマンド判定にかける。
+guard::strip_wrappers() {
+  local s="$1" changed=1 first last
+  while [ "$changed" -eq 1 ]; do
+    changed=0
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    first="${s:0:1}"
+    last="${s: -1}"
+    case "$first" in
+      '(' | '{')
+        s="${s:1}"
+        changed=1
+        ;;
+    esac
+    case "$last" in
+      ')' | '}')
+        s="${s%?}"
+        changed=1
+        ;;
+    esac
+  done
+  printf '%s' "$s"
+}
+
+# guard::scan_target ROLE TARGET — TARGET（元コマンド、またはコマンド置換/サブシェルから
+# 抽出された中身）を guard::split_segments でセグメントへ分割し、各セグメントについて
+# 外側の括弧を guard::strip_wrappers で剥がし、先頭の `VAR=value` 代入プレフィックス
+# （連続してもよい）を読み飛ばしたうえで guard::git_subcommand に渡し、役割プロファイルへ
+# 照合する。deny と判定したセグメントがあれば guard::deny がスクリプトごと終了する。
+guard::scan_target() {
+  local role="$1" target="$2" segment stripped result sub rest
   while IFS= read -r segment || [ -n "$segment" ]; do
+    stripped="$(guard::strip_wrappers "$segment")"
     set -f
     # shellcheck disable=SC2086
-    set -- $segment
+    set -- $stripped
     set +f
+    while [ "$#" -gt 0 ] && [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; do
+      shift
+    done
     result="$(guard::git_subcommand "$@")" || continue
     IFS=$'\t' read -r sub rest <<< "$result"
     case "$role" in
@@ -120,7 +226,22 @@ guard::check_bash() {
         esac
         ;;
     esac
-  done < <(guard::split_segments "$command")
+  done < <(guard::split_segments "$target")
+}
+
+# guard::check_bash ROLE COMMAND — Bash ツールの git コマンドを意味解析し、役割プロファイルに
+# 反していれば deny する。cd <dir> && git ... の形は連結分割後、cd 側の segment が
+# git_subcommand で非git判定（continue）となり、git 側 segment だけが評価される。
+# `git` はセグメント先頭以外にも「コマンドワード」として現れうる（コマンド置換 $(...) /
+# バッククォートの中・サブシェル (...) の中・`VAR=val` 代入プレフィックスの後）ため、
+# guard::strip_subs で外側を評価しつつ guard::extract_subs で内側を再帰的に取り出し、
+# それぞれ guard::scan_target で同じ役割プロファイルに照合する。
+guard::check_bash() {
+  local role="$1" command="$2" inner
+  guard::scan_target "$role" "$(guard::strip_subs "$command")"
+  while IFS= read -r inner || [ -n "$inner" ]; do
+    [ -n "$inner" ] && guard::scan_target "$role" "$inner"
+  done < <(guard::extract_subs "$command")
 }
 
 # guard::normalize_path PATH — "." "/" の連続や ".." を解決した正規パスを返す（依存追加を避け、
