@@ -45,10 +45,13 @@ trinity::guard_settings() {
 
 # trinity::claude ROLE MODEL CWD PROMPT — headless な claude を1回起動し標準出力を返す。
 # CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可しつつ、
-# lib/guard.sh を PreToolUse フックとして per-actor 注入し役割境界を機構として enforce する。
+# lib/guard.sh を PreToolUse フックとして per-actor 注入し Write/Edit の役割境界を enforce する。
+# git の役割境界は lib/git-shim/git を子の PATH 先頭に prepend して enforce する（親 PATH は不変）。
 trinity::claude() {
   local role="$1" model="$2" cwd="$3" prompt="$4"
-  ( cd "$cwd" && env -u CLAUDECODE TRINITY_ROLE="$role" claude -p "$prompt" \
+  ( cd "$cwd" && env -u CLAUDECODE TRINITY_ROLE="$role" \
+      PATH="${TRINITY_ROOT}/lib/git-shim:${PATH}" \
+      claude -p "$prompt" \
       --model "$model" --permission-mode bypassPermissions \
       --settings "$(trinity::guard_settings)" )
 }
