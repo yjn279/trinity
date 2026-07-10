@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# lib/git-shim/git — 役割境界を PATH レベルで enforce する git wrapper。
+#
+# PATH 先頭に置かれ、子プロセスが実行する `git ...` を exec 時点の argv で捕捉する。
+# シェルの構文（制御構文・コマンド置換・サブシェル・変数代入プレフィックス等）を経ても、
+# 最終的に本物の git が exec される時点では argv しか残らないため、ここで argv を直接
+# 検査すれば文字列パーサの脆弱性クラスを構造的に消せる（詳細は plan.md 参照）。
+# TRINITY_ROLE の許否集合はここが単一の正であり、guard.sh・agents/*.md へ書き写さない。
+set -euo pipefail
+
+role="${TRINITY_ROLE:-}"
+sub=""
+declare -a rest=()
+declare -a args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  tok="${args[$i]}"
+  case "$tok" in
+    -C | -c | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
+    --git-dir=* | --work-tree=* | --namespace=*) i=$((i + 1)) ;;
+    -*) i=$((i + 1)) ;;
+    *)
+      sub="$tok"
+      rest=("${args[@]:$((i + 1))}")
+      break
+      ;;
+  esac
+done
+
+# git_shim::deny REASON — 理由を stderr へ書き非ゼロで終了する（本物の git へは委譲しない）。
+git_shim::deny() {
+  printf 'TRINITY-DENY: role=%s %s\n' "${role}" "${1}" >&2
+  exit 1
+}
+
+case "$role" in
+  planner | evaluator)
+    case "$sub" in
+      commit | push | reset | rebase | merge | checkout | switch | tag | branch | cherry-pick | revert | stash | am | apply | gc | filter-branch | update-ref)
+        git_shim::deny "は状態変更 git（${sub}）を実行できない"
+        ;;
+    esac
+    ;;
+  generator)
+    case "$sub" in
+      push)
+        git_shim::deny "は push を実行できない（push はオーケストレーターの責務）"
+        ;;
+      commit)
+        for a in "${rest[@]+"${rest[@]}"}"; do
+          case "$a" in
+            --amend | --no-verify | -n)
+              git_shim::deny "は git commit --amend / --no-verify を実行できない"
+              ;;
+          esac
+        done
+        ;;
+    esac
+    ;;
+esac
+
+# 本物の git を、shim 自身のディレクトリを除いた PATH から探す（無限再帰を防ぐ）。
+self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real_git=""
+declare -a path_dirs=()
+IFS=':' read -r -a path_dirs <<< "${PATH:-}"
+for dir in "${path_dirs[@]+"${path_dirs[@]}"}"; do
+  [ "$dir" = "$self_dir" ] && continue
+  if [ -x "${dir}/git" ]; then
+    real_git="${dir}/git"
+    break
+  fi
+done
+[ -n "$real_git" ] || { printf 'TRINITY-DENY: real git not found in PATH (excluding shim dir)\n' >&2; exit 127; }
+
+exec "$real_git" "$@"
