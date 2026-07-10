@@ -6,17 +6,30 @@
 # 最終的に本物の git が exec される時点では argv しか残らないため、ここで argv を直接
 # 検査すれば文字列パーサの脆弱性クラスを構造的に消せる（詳細は plan.md 参照）。
 # TRINITY_ROLE の許否集合はここが単一の正であり、guard.sh・agents/*.md へ書き写さない。
+#
+# git 自身の別名（alias）機構は、サブコマンド名の完全一致判定だけでは迂回できる
+# （`git config alias.p '!git push'` → `git p` や `git -c alias.pp=push ... pp`）。
+# これを塞ぐため、状態変更禁止ロール（planner/evaluator）は「読み取り専用サブコマンドの
+# allowlist」（deny-by-default）へ倒し、alias 名を含む allowlist 外の語をすべて拒否する。
+# generator は広く git を要するため denylist を維持しつつ、alias 経由の迂回だけを個別に塞ぐ。
 set -euo pipefail
 
 role="${TRINITY_ROLE:-}"
 sub=""
+alias_injected=0
 declare -a rest=()
 declare -a args=("$@")
 i=0
 while [ "$i" -lt "${#args[@]}" ]; do
   tok="${args[$i]}"
   case "$tok" in
-    -C | -c | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
+    -c)
+      case "${args[$((i + 1))]:-}" in
+        alias.*) alias_injected=1 ;;
+      esac
+      i=$((i + 2))
+      ;;
+    -C | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
     --git-dir=* | --work-tree=* | --namespace=*) i=$((i + 1)) ;;
     -*) i=$((i + 1)) ;;
     *)
@@ -33,11 +46,95 @@ git_shim::deny() {
   exit 1
 }
 
+# git_shim::config_is_read ARGS... — git config 呼び出しが読み取り専用形（--get/--get-all/
+# --get-regexp/--get-urlmatch/--list/-l）かどうかを判定する。書き込み系フラグが含まれる場合や
+# 読み取りフラグが1つも無い場合（`git config alias.p '...'` のような位置引数形の代入）は false。
+git_shim::config_is_read() {
+  local tok found_read=0
+  for tok in "$@"; do
+    case "$tok" in
+      --get | --get-all | --get-regexp | --get-urlmatch | --list | -l)
+        found_read=1
+        ;;
+      --add | --unset | --unset-all | --replace-all | --rename-section | --remove-section | --edit | -e)
+        return 1
+        ;;
+    esac
+  done
+  [ "$found_read" -eq 1 ]
+}
+
+# -c alias.<name>=<value> は本物 git への委譲後にそのプロセス内だけで alias を成立させ、
+# サブコマンド名の完全一致判定を素通りしうる。読み取り専用の正当な用途が無いため、
+# ロールに関わらず一律で deny する（config 書き込み禁止・allowlist と合わせた多層防御）。
+if [ "$alias_injected" -eq 1 ]; then
+  git_shim::deny "は -c alias.* によるインライン別名注入を実行できない"
+fi
+
+# 本物の git を、shim 自身のディレクトリを除いた PATH から探す（無限再帰を防ぐ）。
+self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real_git=""
+declare -a path_dirs=()
+IFS=':' read -r -a path_dirs <<< "${PATH:-}"
+for dir in "${path_dirs[@]+"${path_dirs[@]}"}"; do
+  [ "$dir" = "$self_dir" ] && continue
+  if [ -x "${dir}/git" ]; then
+    real_git="${dir}/git"
+    break
+  fi
+done
+[ -n "$real_git" ] || { printf 'TRINITY-DENY: real git not found in PATH (excluding shim dir)\n' >&2; exit 127; }
+
+# git_shim::check_alias_chain NAME DEPTH — 本物 git の既存 alias 定義（`config alias.<NAME>`）
+# を解決し、shell alias（`!` 始まり）や push・commit --amend/--no-verify へ展開されるなら deny
+# する。alias が別の alias 名へ展開されるケースに備え再帰するが、深さ制限で無限ループを防ぐ。
+# なお git は同名の組み込みサブコマンドを常に alias より優先するため（実機確認済み）、
+# NAME が allowlist/組み込み名と衝突する場合はそもそも alias 展開が使われず安全側に倒れる。
+git_shim::check_alias_chain() {
+  local name="$1" depth="${2:-0}" expansion first a
+  [ -z "$name" ] && return 0
+  [ "$depth" -ge 5 ] && return 0
+  expansion="$("${real_git}" config --get "alias.${name}" 2>/dev/null || true)"
+  [ -z "$expansion" ] && return 0
+  case "$expansion" in
+    '!'*)
+      git_shim::deny "はシェル実行を伴う git alias（${name} → ${expansion}）を実行できない"
+      ;;
+  esac
+  # alias 展開はスペース区切りの git 引数列として意図的に分割する。
+  # shellcheck disable=SC2206
+  local -a exp_args=($expansion)
+  first="${exp_args[0]:-}"
+  case "$first" in
+    push)
+      git_shim::deny "は push へ展開される git alias（${name} → ${expansion}）を実行できない"
+      ;;
+    commit)
+      for a in "${exp_args[@]:1}"; do
+        case "$a" in
+          --amend | --no-verify | -n)
+            git_shim::deny "は commit --amend/--no-verify へ展開される git alias（${name} → ${expansion}）を実行できない"
+            ;;
+        esac
+      done
+      ;;
+  esac
+  git_shim::check_alias_chain "$first" "$((depth + 1))"
+}
+
 case "$role" in
   planner | evaluator)
     case "$sub" in
-      commit | push | reset | rebase | merge | checkout | switch | tag | branch | cherry-pick | revert | stash | am | apply | gc | filter-branch | update-ref)
-        git_shim::deny "は状態変更 git（${sub}）を実行できない"
+      config)
+        git_shim::config_is_read "${rest[@]+"${rest[@]}"}" ||
+          git_shim::deny "は git config の書き込み操作を実行できない"
+        ;;
+      "" | log | show | diff | status | rev-parse | blame | cat-file | ls-files | ls-tree | for-each-ref | rev-list | describe | shortlog | show-ref | name-rev | grep | var | help | version)
+        : # 読み取り専用サブコマンドの allowlist。ここに無い語（alias 名・両用コマンド・
+          # 未知/将来のサブコマンドを含む）はすべて deny-by-default で拒否する。
+        ;;
+      *)
+        git_shim::deny "は読み取り専用の git サブコマンド以外（${sub}）を実行できない"
         ;;
     esac
     ;;
@@ -55,22 +152,15 @@ case "$role" in
           esac
         done
         ;;
+      config)
+        git_shim::config_is_read "${rest[@]+"${rest[@]}"}" ||
+          git_shim::deny "は git config の書き込み操作を実行できない（alias 定義を含む）"
+        ;;
     esac
+    # サブコマンド名が本物 git 側に既存の alias として定義されていないか解決し、
+    # push・shell alias・commit --amend/--no-verify への展開を deny する。
+    git_shim::check_alias_chain "$sub" 0
     ;;
 esac
-
-# 本物の git を、shim 自身のディレクトリを除いた PATH から探す（無限再帰を防ぐ）。
-self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-real_git=""
-declare -a path_dirs=()
-IFS=':' read -r -a path_dirs <<< "${PATH:-}"
-for dir in "${path_dirs[@]+"${path_dirs[@]}"}"; do
-  [ "$dir" = "$self_dir" ] && continue
-  if [ -x "${dir}/git" ]; then
-    real_git="${dir}/git"
-    break
-  fi
-done
-[ -n "$real_git" ] || { printf 'TRINITY-DENY: real git not found in PATH (excluding shim dir)\n' >&2; exit 127; }
 
 exec "$real_git" "$@"
