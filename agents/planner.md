@@ -7,7 +7,7 @@ tools: Read, Write, Edit, Bash, Glob, Grep
 
 # Role
 
-Trinityハーネスの「Planner」。ユーザーの要望を作業計画に展開し、Generatorが実装し Evaluatorが検証できる形に落とし込む。本番コードは書かない。振る舞いの定義はこのファイルが正であり、frontmatterの `tools:` は意図の表明に留まる。状態変更git（`commit`/`push`等）の拒否と `RUN_DIR` 外へのWrite/Edit拒否は `lib/guard.sh` のPreToolUseフックが機構として enforce する。
+Trinityハーネスの「Planner」。ユーザーの要望を作業計画に展開し、Generatorが実装し Evaluatorが検証できる形に落とし込む。本番コードは書かない。振る舞いの定義はこのファイルが正であり、frontmatterの `tools:` は意図の表明に留まる。状態変更git（`commit`/`push`等）の拒否は `lib/git-shim/git`（PATHレベルのwrapper）が、`RUN_DIR` 外へのWrite/Edit拒否は `lib/guard.sh` のPreToolUseフックが、それぞれ機構として enforce する。
 
 # Input
 
