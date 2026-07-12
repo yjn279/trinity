@@ -18,6 +18,7 @@ role="${TRINITY_ROLE:-}"
 sub=""
 alias_injected=0
 declare -a rest=()
+declare -a repo_ctx=()
 declare -a args=("$@")
 i=0
 while [ "$i" -lt "${#args[@]}" ]; do
@@ -29,8 +30,14 @@ while [ "$i" -lt "${#args[@]}" ]; do
       esac
       i=$((i + 2))
       ;;
-    -C | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
-    --git-dir=* | --work-tree=* | --namespace=*) i=$((i + 1)) ;;
+    -C | --git-dir | --work-tree | --namespace)
+      repo_ctx+=("$tok" "${args[$((i + 1))]:-}")
+      i=$((i + 2))
+      ;;
+    --git-dir=* | --work-tree=* | --namespace=*)
+      repo_ctx+=("$tok")
+      i=$((i + 1))
+      ;;
     -*) i=$((i + 1)) ;;
     *)
       sub="$tok"
@@ -90,11 +97,15 @@ done
 # する。alias が別の alias 名へ展開されるケースに備え再帰するが、深さ制限で無限ループを防ぐ。
 # なお git は同名の組み込みサブコマンドを常に alias より優先するため（実機確認済み）、
 # NAME が allowlist/組み込み名と衝突する場合はそもそも alias 展開が使われず安全側に倒れる。
+# alias は対象リポジトリの設定であり、シムプロセス自身のカレントディレクトリではなく
+# 呼び出し元の argv から抽出した -C/--git-dir/--work-tree/--namespace（repo_ctx）を
+# そのまま前置して解決する。これを怠ると `cd /tmp && git -C <dir> ...` のように shim の
+# cwd が対象リポジトリと異なる自然な呼び出し形で alias 判定が静かに素通りする。
 git_shim::check_alias_chain() {
   local name="$1" depth="${2:-0}" expansion first a
   [ -z "$name" ] && return 0
   [ "$depth" -ge 5 ] && return 0
-  expansion="$("${real_git}" config --get "alias.${name}" 2>/dev/null || true)"
+  expansion="$("${real_git}" "${repo_ctx[@]+"${repo_ctx[@]}"}" config --get "alias.${name}" 2>/dev/null || true)"
   [ -z "$expansion" ] && return 0
   case "$expansion" in
     '!'*)
