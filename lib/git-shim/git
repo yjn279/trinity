@@ -15,8 +15,14 @@
 set -euo pipefail
 
 role="${TRINITY_ROLE:-}"
+
+# git_shim::deny REASON — 理由を stderr へ書き非ゼロで終了する（本物の git へは委譲しない）。
+git_shim::deny() {
+  printf 'TRINITY-DENY: role=%s %s\n' "${role}" "${1}" >&2
+  exit 1
+}
+
 sub=""
-alias_injected=0
 declare -a rest=()
 declare -a repo_ctx=()
 declare -a args=("$@")
@@ -25,10 +31,12 @@ while [ "$i" -lt "${#args[@]}" ]; do
   tok="${args[$i]}"
   case "$tok" in
     -c)
-      case "${args[$((i + 1))]:-}" in
-        alias.*) alias_injected=1 ;;
-      esac
-      i=$((i + 2))
+      # -c <key>=<value> は本物 git への委譲後にそのプロセス内だけで設定を一時上書きする。
+      # alias.* によるサブコマンド名の完全一致判定の迂回だけでなく、core.pager・core.fsmonitor・
+      # core.sshCommand のようなシェル実行を伴う設定キーへの注入も、allowlist 判定後に効いてしまう
+      # （例: `-c core.fsmonitor='!cmd' status` は sub=status で許可された後にコマンドを実行する）。
+      # どのアクターも -c による一時上書きを正当に必要としないため、キーを問わず一律で deny する。
+      git_shim::deny "は -c によるgit設定の一時上書きを実行できない"
       ;;
     -C | --git-dir | --work-tree | --namespace)
       repo_ctx+=("$tok" "${args[$((i + 1))]:-}")
@@ -46,12 +54,6 @@ while [ "$i" -lt "${#args[@]}" ]; do
       ;;
   esac
 done
-
-# git_shim::deny REASON — 理由を stderr へ書き非ゼロで終了する（本物の git へは委譲しない）。
-git_shim::deny() {
-  printf 'TRINITY-DENY: role=%s %s\n' "${role}" "${1}" >&2
-  exit 1
-}
 
 # git_shim::config_is_read ARGS... — git config 呼び出しが読み取り専用形（--get/--get-all/
 # --get-regexp/--get-urlmatch/--list/-l）かどうかを判定する。書き込み系フラグが含まれる場合や
@@ -71,12 +73,55 @@ git_shim::config_is_read() {
   [ "$found_read" -eq 1 ]
 }
 
-# -c alias.<name>=<value> は本物 git への委譲後にそのプロセス内だけで alias を成立させ、
-# サブコマンド名の完全一致判定を素通りしうる。読み取り専用の正当な用途が無いため、
-# ロールに関わらず一律で deny する（config 書き込み禁止・allowlist と合わせた多層防御）。
-if [ "$alias_injected" -eq 1 ]; then
-  git_shim::deny "は -c alias.* によるインライン別名注入を実行できない"
-fi
+# git_shim::strip_quotes TOKEN — 前後を囲む一重の引用符（"..." または '...'）を1組だけ剥がす。
+# alias 展開はスペース区切りの argv 列として素朴に分割するため、`commit "--amend"` のような
+# 引用符付きの値は分割後も引用符が残る。しかし本物 git 自身の alias 展開はこの引用符を剥がして
+# フラグとして解釈するため、剥がさずに比較すると `--amend` が字面一致せず判定を素通りする。
+git_shim::strip_quotes() {
+  local t="$1"
+  case "$t" in
+    \"*\") t="${t#\"}"; t="${t%\"}" ;;
+    \'*\') t="${t#\'}"; t="${t%\'}" ;;
+  esac
+  printf '%s' "$t"
+}
+
+# git_shim::is_denied_commit_flag TOKEN — commit のトークンが --amend/--no-verify 相当か判定する。
+# git は commit の真偽値の短縮オプション（-n など）を1トークンへ束ねられる（例: -na は -n -a）。
+# 値を取る短縮オプション（-m/-c/-C/-F/-t/-S/-u）以降の文字は値なので、そこで走査を止める。
+git_shim::is_denied_commit_flag() {
+  local tok="$1"
+  case "$tok" in
+    --amend | --no-verify) return 0 ;;
+    --*) return 1 ;;
+    -*)
+      local body="${tok#-}" i=0 c
+      local len=${#body}
+      while [ "$i" -lt "$len" ]; do
+        c="${body:$i:1}"
+        case "$c" in
+          n) return 0 ;;
+          m | c | C | F | t | S | u) return 1 ;;
+        esac
+        i=$((i + 1))
+      done
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# git_shim::deny_if_commit_flags MESSAGE ARGS... — commit のトークン列に --amend/--no-verify
+# 相当が1つでもあれば MESSAGE で deny する。直接呼び出しと alias 展開の両方の commit 判定が
+# 使う共通経路。
+git_shim::deny_if_commit_flags() {
+  local message="$1" a
+  shift
+  for a in "$@"; do
+    git_shim::is_denied_commit_flag "$a" && git_shim::deny "$message"
+  done
+  return 0
+}
 
 # 本物の git を、shim 自身のディレクトリを除いた PATH から探す（無限再帰を防ぐ）。
 self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,7 +149,9 @@ done
 git_shim::check_alias_chain() {
   local name="$1" depth="${2:-0}" expansion first a
   [ -z "$name" ] && return 0
-  [ "$depth" -ge 5 ] && return 0
+  # 深さ上限に達しても「解決できなかった」だけであり安全は確認できていないため、
+  # allow ではなく deny 側に倒す（fail-open による push/amend 迂回を防ぐ）。
+  [ "$depth" -ge 5 ] && git_shim::deny "は alias 展開の連鎖が深すぎて安全性を確認できない（${name}）"
   expansion="$("${real_git}" "${repo_ctx[@]+"${repo_ctx[@]}"}" config --get "alias.${name}" 2>/dev/null || true)"
   [ -z "$expansion" ] && return 0
   case "$expansion" in
@@ -115,19 +162,19 @@ git_shim::check_alias_chain() {
   # alias 展開はスペース区切りの git 引数列として意図的に分割する。
   # shellcheck disable=SC2206
   local -a exp_args=($expansion)
-  first="${exp_args[0]:-}"
+  first="$(git_shim::strip_quotes "${exp_args[0]:-}")"
   case "$first" in
     push)
       git_shim::deny "は push へ展開される git alias（${name} → ${expansion}）を実行できない"
       ;;
     commit)
+      declare -a stripped_args=()
       for a in "${exp_args[@]:1}"; do
-        case "$a" in
-          --amend | --no-verify | -n)
-            git_shim::deny "は commit --amend/--no-verify へ展開される git alias（${name} → ${expansion}）を実行できない"
-            ;;
-        esac
+        stripped_args+=("$(git_shim::strip_quotes "$a")")
       done
+      git_shim::deny_if_commit_flags \
+        "は commit --amend/--no-verify へ展開される git alias（${name} → ${expansion}）を実行できない" \
+        "${stripped_args[@]+"${stripped_args[@]}"}"
       ;;
   esac
   git_shim::check_alias_chain "$first" "$((depth + 1))"
@@ -155,13 +202,9 @@ case "$role" in
         git_shim::deny "は push を実行できない（push はオーケストレーターの責務）"
         ;;
       commit)
-        for a in "${rest[@]+"${rest[@]}"}"; do
-          case "$a" in
-            --amend | --no-verify | -n)
-              git_shim::deny "は git commit --amend / --no-verify を実行できない"
-              ;;
-          esac
-        done
+        git_shim::deny_if_commit_flags \
+          "は git commit --amend / --no-verify を実行できない" \
+          "${rest[@]+"${rest[@]}"}"
         ;;
       config)
         git_shim::config_is_read "${rest[@]+"${rest[@]}"}" ||
@@ -171,6 +214,9 @@ case "$role" in
     # サブコマンド名が本物 git 側に既存の alias として定義されていないか解決し、
     # push・shell alias・commit --amend/--no-verify への展開を deny する。
     git_shim::check_alias_chain "$sub" 0
+    ;;
+  *)
+    git_shim::deny "は未知のロール（TRINITY_ROLE=${role}）のため git を実行できない"
     ;;
 esac
 

@@ -39,10 +39,12 @@ trinity::agent_body() {
 # trinity::guard_settings — lib/guard.sh を PreToolUse フックとして注入する --settings JSON。
 # 役割ごとの許否は TRINITY_ROLE（env）で guard.sh 自身が分岐するため、JSON 自体は共通でよい。
 # git はサブプロセスとして exec されるため matcher の対象外とし、PATH prepend した shim（下記
-# trinity::claude）が exec 時点の argv で捕捉する。matcher は Write/Edit のみに絞る。
+# trinity::claude）が exec 時点の argv で捕捉する。matcher は Write/Edit/NotebookEdit のみに絞る。
 trinity::guard_settings() {
-  printf '{"hooks":{"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"%s/lib/guard.sh"}]}]}}' \
-    "${TRINITY_ROOT}"
+  local escaped_root="${TRINITY_ROOT//\\/\\\\}"
+  escaped_root="${escaped_root//\"/\\\"}"
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Write|Edit|NotebookEdit","hooks":[{"type":"command","command":"%s/lib/guard.sh"}]}]}}' \
+    "${escaped_root}"
 }
 
 # trinity::claude ROLE MODEL CWD PROMPT — headless な claude を1回起動し標準出力を返す。

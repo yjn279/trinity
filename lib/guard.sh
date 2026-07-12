@@ -49,12 +49,12 @@ guard::deny() {
   exit 0
 }
 
-# guard::normalize_path PATH — "." "/" の連続や ".." を解決した正規パスを返す（依存追加を避け、
+# guard::normalize_path PATH — "." "/" の連続や ".." を解決した絶対パスを返す（依存追加を避け、
 # ファイル非存在でも解決できるよう `realpath` は使わず bash 文字列処理のみで完結させる）。
-# 絶対パス（先頭 "/"）では ".." がルートを超えて遡らないようにし、相対パスではそのまま残す。
+# 呼び出し元（RUN_DIR・Write/Edit/NotebookEdit の file_path/notebook_path）は常に絶対パスのため、
+# ルートを超える ".." は無視する。
 guard::normalize_path() {
-  local path="$1" component rest result="" abs=0
-  [ "${path:0:1}" = "/" ] && abs=1
+  local path="$1" component rest result=""
   rest="$path"
   while [ -n "$rest" ]; do
     component="${rest%%/*}"
@@ -66,15 +66,11 @@ guard::normalize_path() {
     case "$component" in
       ''|'.') continue ;;
       '..')
-        if [ -n "$result" ]; then
-          case "$result" in
-            ..|*/..) result="${result}/.." ;;
-            */*) result="${result%/*}" ;;
-            *) result="" ;;
-          esac
-        elif [ "$abs" -eq 0 ]; then
-          result=".."
-        fi
+        case "$result" in
+          ..|*/..) result="${result}/.." ;;
+          */*) result="${result%/*}" ;;
+          *) result="" ;;
+        esac
         ;;
       *)
         if [ -z "$result" ]; then
@@ -85,11 +81,7 @@ guard::normalize_path() {
         ;;
     esac
   done
-  if [ "$abs" -eq 1 ]; then
-    printf '/%s' "$result"
-  else
-    printf '%s' "$result"
-  fi
+  printf '/%s' "$result"
 }
 
 # guard::check_write ROLE FILE_PATH — Write/Edit の file_path 制約を判定する。
@@ -104,6 +96,10 @@ guard::check_write() {
       ;;
     planner)
       run_dir="${RUN_DIR:-}"
+      # RUN_DIR 未設定・空のまま境界判定に使うと正規化結果が "" になり、後続の case が
+      # "starts with /" と等価になって全ての絶対パスを許可してしまう（fail-open）。
+      # 判定不能な状態は allow ではなく deny 側に倒す。
+      [ -n "$run_dir" ] || guard::deny "role=plannerはRUN_DIR未設定のため書き込み範囲を判定できない"
       normalized_run_dir="$(guard::normalize_path "${run_dir%/}")"
       normalized_path="$(guard::normalize_path "$file_path")"
       case "$normalized_path" in
@@ -112,6 +108,12 @@ guard::check_write() {
           guard::deny "role=plannerはRUN_DIR外への書き込みができない: ${file_path}"
           ;;
       esac
+      ;;
+    generator)
+      : # 制約なし。
+      ;;
+    *)
+      guard::deny "role未知（TRINITY_ROLE=${role}）のためWrite/Editを実行できない"
       ;;
   esac
 }
@@ -124,6 +126,9 @@ main() {
   case "$tool_name" in
     Write|Edit)
       guard::check_write "$role" "$(guard::json_field file_path "$raw")"
+      ;;
+    NotebookEdit)
+      guard::check_write "$role" "$(guard::json_field notebook_path "$raw")"
       ;;
   esac
 }
