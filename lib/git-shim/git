@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# lib/git-shim/git — 役割境界を PATH レベルで enforce する git wrapper。
+#
+# PATH 先頭に置かれ、子プロセスが実行する `git ...` を exec 時点の argv で捕捉する。
+# シェルの構文（制御構文・コマンド置換・サブシェル・変数代入プレフィックス等）を経ても、
+# 最終的に本物の git が exec される時点では argv しか残らないため、ここで argv を直接
+# 検査すれば文字列パーサの脆弱性クラスを構造的に消せる（詳細は plan.md 参照）。
+# TRINITY_ROLE の許否集合はここが単一の正であり、guard.sh・agents/*.md へ書き写さない。
+#
+# git 自身の別名（alias）機構は、サブコマンド名の完全一致判定だけでは迂回できる
+# （`git config alias.p '!git push'` → `git p` や `git -c alias.pp=push ... pp`）。
+# これを塞ぐため、状態変更禁止ロール（planner/evaluator）は「読み取り専用サブコマンドの
+# allowlist」（deny-by-default）へ倒し、alias 名を含む allowlist 外の語をすべて拒否する。
+# generator は広く git を要するため denylist を維持しつつ、alias 経由の迂回だけを個別に塞ぐ。
+set -euo pipefail
+
+role="${TRINITY_ROLE:-}"
+
+# git_shim::deny REASON — 理由を stderr へ書き非ゼロで終了する（本物の git へは委譲しない）。
+git_shim::deny() {
+  printf 'TRINITY-DENY: role=%s %s\n' "${role}" "${1}" >&2
+  exit 1
+}
+
+sub=""
+declare -a rest=()
+declare -a repo_ctx=()
+declare -a args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  tok="${args[$i]}"
+  case "$tok" in
+    -c)
+      # -c <key>=<value> は本物 git への委譲後にそのプロセス内だけで設定を一時上書きする。
+      # alias.* によるサブコマンド名の完全一致判定の迂回だけでなく、core.pager・core.fsmonitor・
+      # core.sshCommand のようなシェル実行を伴う設定キーへの注入も、allowlist 判定後に効いてしまう
+      # （例: `-c core.fsmonitor='!cmd' status` は sub=status で許可された後にコマンドを実行する）。
+      # どのアクターも -c による一時上書きを正当に必要としないため、キーを問わず一律で deny する。
+      git_shim::deny "は -c によるgit設定の一時上書きを実行できない"
+      ;;
+    -C | --git-dir | --work-tree | --namespace)
+      repo_ctx+=("$tok" "${args[$((i + 1))]:-}")
+      i=$((i + 2))
+      ;;
+    --git-dir=* | --work-tree=* | --namespace=*)
+      repo_ctx+=("$tok")
+      i=$((i + 1))
+      ;;
+    -*) i=$((i + 1)) ;;
+    *)
+      sub="$tok"
+      rest=("${args[@]:$((i + 1))}")
+      break
+      ;;
+  esac
+done
+
+# git_shim::config_is_read ARGS... — git config 呼び出しが読み取り専用形（--get/--get-all/
+# --get-regexp/--get-urlmatch/--list/-l）かどうかを判定する。書き込み系フラグが含まれる場合や
+# 読み取りフラグが1つも無い場合（`git config alias.p '...'` のような位置引数形の代入）は false。
+git_shim::config_is_read() {
+  local tok found_read=0
+  for tok in "$@"; do
+    case "$tok" in
+      --get | --get-all | --get-regexp | --get-urlmatch | --list | -l)
+        found_read=1
+        ;;
+      --add | --unset | --unset-all | --replace-all | --rename-section | --remove-section | --edit | -e)
+        return 1
+        ;;
+    esac
+  done
+  [ "$found_read" -eq 1 ]
+}
+
+# git_shim::strip_quotes TOKEN — 前後を囲む一重の引用符（"..." または '...'）を1組だけ剥がす。
+# alias 展開はスペース区切りの argv 列として素朴に分割するため、`commit "--amend"` のような
+# 引用符付きの値は分割後も引用符が残る。しかし本物 git 自身の alias 展開はこの引用符を剥がして
+# フラグとして解釈するため、剥がさずに比較すると `--amend` が字面一致せず判定を素通りする。
+git_shim::strip_quotes() {
+  local t="$1"
+  case "$t" in
+    \"*\") t="${t#\"}"; t="${t%\"}" ;;
+    \'*\') t="${t#\'}"; t="${t%\'}" ;;
+  esac
+  printf '%s' "$t"
+}
+
+# git_shim::is_denied_commit_flag TOKEN — commit のトークンが --amend/--no-verify 相当か判定する。
+# git は commit の真偽値の短縮オプション（-n など）を1トークンへ束ねられる（例: -na は -n -a）。
+# 値を取る短縮オプション（-m/-c/-C/-F/-t/-S/-u）以降の文字は値なので、そこで走査を止める。
+git_shim::is_denied_commit_flag() {
+  local tok="$1"
+  case "$tok" in
+    --amend | --no-verify) return 0 ;;
+    --*) return 1 ;;
+    -*)
+      local body="${tok#-}" i=0 c
+      local len=${#body}
+      while [ "$i" -lt "$len" ]; do
+        c="${body:$i:1}"
+        case "$c" in
+          n) return 0 ;;
+          m | c | C | F | t | S | u) return 1 ;;
+        esac
+        i=$((i + 1))
+      done
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# git_shim::deny_if_commit_flags MESSAGE ARGS... — commit のトークン列に --amend/--no-verify
+# 相当が1つでもあれば MESSAGE で deny する。直接呼び出しと alias 展開の両方の commit 判定が
+# 使う共通経路。
+git_shim::deny_if_commit_flags() {
+  local message="$1" a
+  shift
+  for a in "$@"; do
+    git_shim::is_denied_commit_flag "$a" && git_shim::deny "$message"
+  done
+  return 0
+}
+
+# 本物の git を、shim 自身のディレクトリを除いた PATH から探す（無限再帰を防ぐ）。
+self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real_git=""
+declare -a path_dirs=()
+IFS=':' read -r -a path_dirs <<< "${PATH:-}"
+for dir in "${path_dirs[@]+"${path_dirs[@]}"}"; do
+  [ "$dir" = "$self_dir" ] && continue
+  if [ -x "${dir}/git" ]; then
+    real_git="${dir}/git"
+    break
+  fi
+done
+[ -n "$real_git" ] || { printf 'TRINITY-DENY: real git not found in PATH (excluding shim dir)\n' >&2; exit 127; }
+
+# git_shim::check_alias_chain NAME DEPTH — 本物 git の既存 alias 定義（`config alias.<NAME>`）
+# を解決し、shell alias（`!` 始まり）や push・commit --amend/--no-verify へ展開されるなら deny
+# する。alias が別の alias 名へ展開されるケースに備え再帰するが、深さ制限で無限ループを防ぐ。
+# なお git は同名の組み込みサブコマンドを常に alias より優先するため（実機確認済み）、
+# NAME が allowlist/組み込み名と衝突する場合はそもそも alias 展開が使われず安全側に倒れる。
+# alias は対象リポジトリの設定であり、シムプロセス自身のカレントディレクトリではなく
+# 呼び出し元の argv から抽出した -C/--git-dir/--work-tree/--namespace（repo_ctx）を
+# そのまま前置して解決する。これを怠ると `cd /tmp && git -C <dir> ...` のように shim の
+# cwd が対象リポジトリと異なる自然な呼び出し形で alias 判定が静かに素通りする。
+git_shim::check_alias_chain() {
+  local name="$1" depth="${2:-0}" expansion first a
+  [ -z "$name" ] && return 0
+  # 深さ上限に達しても「解決できなかった」だけであり安全は確認できていないため、
+  # allow ではなく deny 側に倒す（fail-open による push/amend 迂回を防ぐ）。
+  [ "$depth" -ge 5 ] && git_shim::deny "は alias 展開の連鎖が深すぎて安全性を確認できない（${name}）"
+  expansion="$("${real_git}" "${repo_ctx[@]+"${repo_ctx[@]}"}" config --get "alias.${name}" 2>/dev/null || true)"
+  [ -z "$expansion" ] && return 0
+  case "$expansion" in
+    '!'*)
+      git_shim::deny "はシェル実行を伴う git alias（${name} → ${expansion}）を実行できない"
+      ;;
+  esac
+  # alias 展開はスペース区切りの git 引数列として意図的に分割する。
+  # shellcheck disable=SC2206
+  local -a exp_args=($expansion)
+  first="$(git_shim::strip_quotes "${exp_args[0]:-}")"
+  case "$first" in
+    push)
+      git_shim::deny "は push へ展開される git alias（${name} → ${expansion}）を実行できない"
+      ;;
+    commit)
+      declare -a stripped_args=()
+      for a in "${exp_args[@]:1}"; do
+        stripped_args+=("$(git_shim::strip_quotes "$a")")
+      done
+      git_shim::deny_if_commit_flags \
+        "は commit --amend/--no-verify へ展開される git alias（${name} → ${expansion}）を実行できない" \
+        "${stripped_args[@]+"${stripped_args[@]}"}"
+      ;;
+  esac
+  git_shim::check_alias_chain "$first" "$((depth + 1))"
+}
+
+case "$role" in
+  planner | evaluator)
+    case "$sub" in
+      config)
+        git_shim::config_is_read "${rest[@]+"${rest[@]}"}" ||
+          git_shim::deny "は git config の書き込み操作を実行できない"
+        ;;
+      "" | log | show | diff | status | rev-parse | blame | cat-file | ls-files | ls-tree | for-each-ref | rev-list | describe | shortlog | show-ref | name-rev | grep | var | help | version)
+        : # 読み取り専用サブコマンドの allowlist。ここに無い語（alias 名・両用コマンド・
+          # 未知/将来のサブコマンドを含む）はすべて deny-by-default で拒否する。
+        ;;
+      *)
+        git_shim::deny "は読み取り専用の git サブコマンド以外（${sub}）を実行できない"
+        ;;
+    esac
+    ;;
+  generator)
+    case "$sub" in
+      push)
+        git_shim::deny "は push を実行できない（push はオーケストレーターの責務）"
+        ;;
+      commit)
+        git_shim::deny_if_commit_flags \
+          "は git commit --amend / --no-verify を実行できない" \
+          "${rest[@]+"${rest[@]}"}"
+        ;;
+      config)
+        git_shim::config_is_read "${rest[@]+"${rest[@]}"}" ||
+          git_shim::deny "は git config の書き込み操作を実行できない（alias 定義を含む）"
+        ;;
+    esac
+    # サブコマンド名が本物 git 側に既存の alias として定義されていないか解決し、
+    # push・shell alias・commit --amend/--no-verify への展開を deny する。
+    git_shim::check_alias_chain "$sub" 0
+    ;;
+  *)
+    git_shim::deny "は未知のロール（TRINITY_ROLE=${role}）のため git を実行できない"
+    ;;
+esac
+
+exec "$real_git" "$@"
