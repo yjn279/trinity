@@ -188,15 +188,36 @@ trinity::revise() {
   trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-revise.md" "revise"
 }
 
+# trinity::intent — 道具パス（/code-review --fix・/simplify・/verify）を統治する意図ブロック。
+# 要件とこれまでに決着した評価を証拠として渡し、道具が決着済みの判断を蒸し返したり要件が
+# 必要とする挙動を壊したりしないよう縛る。道具の改善提案そのものは妨げない
+# （要件より良い改善があってよく、その採否は後段の評価役・計画役が判断する）。
+trinity::intent() {
+  local evals="" f
+  for f in "${RUN_DIR}"/eval-*.md; do
+    [ -e "$f" ] || continue
+    evals="${evals}${evals:+, }$(basename "$f")"
+  done
+  cat <<EOF
+
+
+## 意図（この修正を統治する）
+- 要件: ${RUN_DIR}/requirement.md を読み、この案件が必要とする挙動を把握すること。
+- 決着済みの評価: ${evals:-なし（まだ評価は無い）}
+- 決着済みの評価が却下した変更を蒸し返さない。要件が必要とする挙動を壊さない。
+- 改善提案は妨げない。要件より良い改善があれば行ってよく、採否は後段の評価役・計画役が判断する。
+EOF
+}
+
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
 trinity::tools() {
-  local loop="$1" base; base="$(trinity::base)"
+  local loop="$1" base intent; base="$(trinity::base)"; intent="$(trinity::intent)"
   trinity::status reviewing
   trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/code-review --fix ${base}..HEAD" > "${RUN_DIR}/review-${loop}.md" 2>&1 \
+    "/code-review --fix ${base}..HEAD${intent}" > "${RUN_DIR}/review-${loop}.md" 2>&1 \
     || trinity::log "WARN: /code-review --fix が非ゼロで終了した"
   trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/simplify" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 \
+    "/simplify${intent}" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 \
     || trinity::log "WARN: /simplify が非ゼロで終了した"
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
@@ -205,7 +226,7 @@ trinity::tools() {
     git -C "${WORKTREE_DIR}" commit -q -m "chore: 道具の自動修正を反映する" || true
   fi
   trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。" \
+    "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。${intent}" \
     > "${RUN_DIR}/verify-${loop}.md" 2>&1 \
     || trinity::log "WARN: /verify が非ゼロで終了した"
 }
