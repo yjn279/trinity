@@ -40,7 +40,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 出力者 | 成果物 | 読む側 |
 | :-- | :-- | :-- |
 | Orchestrator | `${SESSION_DIR}/backlog.tsv`（薄い起動リスト：slug・worktree・branch・title） | `bin/trinity supervise` |
-| Orchestrator（初期書き込み）・Generator（要件更新タスク時に現在の正へ書き換え）・パイプライン（`ask/a`・`redrive` 消費時に確定事項として追記） | `${RUN_DIR}/requirement.md`（要件・確定事項） | Planner・道具・Evaluator |
+| Orchestrator（初期書き込み）・Generator（要件更新タスク時に現在の正へ書き換え）・パイプライン（`ask/a`・`redrive` 消費時に確定事項として追記） | `${RUN_DIR}/requirement.md`（要件・確定事項） | Planner・Generator・道具・Evaluator |
 | Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
 | Generator | worktree 内のコミット(SHA、正当な変更不要・要件更新タスクのときは無し)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |

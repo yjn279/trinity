@@ -74,11 +74,7 @@ loop_main() {
       num="${f##*/eval-}"
       num="${num%.md}"
       case "${num}" in *[!0-9]*) continue ;; esac
-      verdict="$(trinity::verdict_of "$f")"
-      case "${verdict}" in
-        PASS | NEEDS_REVISION | FAIL) ;;
-        *) continue ;;
-      esac
+      verdict="$(trinity::settled_verdict "$f")" || continue
       if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
     done
 

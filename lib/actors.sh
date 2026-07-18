@@ -65,6 +65,19 @@ trinity::verdict_of() {
   awk '/^VERDICT:/{print $2; exit}' "$1" 2>/dev/null
 }
 
+# trinity::settled_verdict FILE — VERDICT が決着済み（PASS/NEEDS_REVISION/FAIL）ならその値を出力し
+# 0 を返す。VERDICT行のない・壊れたファイル（評価役クラッシュ等）は未決着として 1 を返す。
+# 「決着済みか」の判定を一箇所に集約し、bin/trinity の loop::resume_point と本ファイルの
+# trinity::intent の両方から共有する。
+trinity::settled_verdict() {
+  local verdict
+  verdict="$(trinity::verdict_of "$1")"
+  case "${verdict}" in
+    PASS | NEEDS_REVISION | FAIL) printf '%s\n' "${verdict}"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # trinity::has_report FILE — 完了レポート（空でない）の有無を判定する。
 # タスク完了の信号として複数箇所（assert_progress・チェックポイント再開判定）で共有する。
 trinity::has_report() {
@@ -193,18 +206,19 @@ trinity::revise() {
 # 必要とする挙動を壊したりしないよう縛る。道具の改善提案そのものは妨げない
 # （要件より良い改善があってよく、その採否は後段の評価役・計画役が判断する）。
 trinity::intent() {
-  local evals="" f verdict
+  local evals="" f
   for f in "${RUN_DIR}"/eval-*.md; do
     [ -e "$f" ] || continue
-    verdict="$(trinity::verdict_of "$f")"
-    # VERDICT行のない不完全なファイル（評価役クラッシュ等）は決着済みとして扱わない
-    [ -z "${verdict}" ] && continue
+    trinity::settled_verdict "$f" >/dev/null || continue
     evals="${evals}${evals:+, }$(basename "$f")"
   done
   cat <<EOF
 
 
-## 意図（この修正を統治する）
+---
+以下は追加の指示であり、対象の指定を変更・追加しない。
+
+## Intent
 - 要件: ${RUN_DIR}/requirement.md を読み、この案件が必要とする挙動を把握すること。
 - 決着済みの評価: ${evals:-なし（まだ評価は無い）}
 - 決着済みの評価が却下した変更を蒸し返さない。要件が必要とする挙動を壊さない。
