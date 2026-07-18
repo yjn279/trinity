@@ -40,13 +40,13 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 出力者 | 成果物 | 読む側 |
 | :-- | :-- | :-- |
 | Orchestrator | `${SESSION_DIR}/backlog.tsv`（薄い起動リスト：slug・worktree・branch・title） | `bin/trinity supervise` |
-| Orchestrator（初期書き込み）・Generator（要件更新タスク時に現在の正へ書き換え） | `${RUN_DIR}/requirement.md`（要件・確定事項） | Planner・道具・Evaluator |
+| Orchestrator（初期書き込み）・Generator（要件更新タスク時に現在の正へ書き換え）・パイプライン（`ask/a`・`redrive` 消費時に確定事項として追記） | `${RUN_DIR}/requirement.md`（要件・確定事項） | Planner・道具・Evaluator |
 | Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
 | Generator | worktree 内のコミット(SHA、正当な変更不要・要件更新タスクのときは無し)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |
 | Evaluator | `${RUN_DIR}/eval-<n>.md`（先頭行 `VERDICT:`。改善は `## 要件への意見` で signal） | Planner（次ループ）・パイプライン |
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
-| Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
+| Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（`requirement.md` へ追記の上、Planner 再計画） |
 | Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
 | `bin/trinity supervise` | `${RUN_DIR}/pid`（起動した `loop` の PID） | `bin/trinity supervise` 自身の再起動ガード（`pid_alive` の `kill -0`） |
 

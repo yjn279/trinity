@@ -193,9 +193,12 @@ trinity::revise() {
 # 必要とする挙動を壊したりしないよう縛る。道具の改善提案そのものは妨げない
 # （要件より良い改善があってよく、その採否は後段の評価役・計画役が判断する）。
 trinity::intent() {
-  local evals="" f
+  local evals="" f verdict
   for f in "${RUN_DIR}"/eval-*.md; do
     [ -e "$f" ] || continue
+    verdict="$(trinity::verdict_of "$f")"
+    # VERDICT行のない不完全なファイル（評価役クラッシュ等）は決着済みとして扱わない
+    [ -z "${verdict}" ] && continue
     evals="${evals}${evals:+, }$(basename "$f")"
   done
   cat <<EOF
