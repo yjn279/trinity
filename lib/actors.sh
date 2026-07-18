@@ -145,7 +145,7 @@ trinity::plan() {
   return 0
 }
 
-# trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（正当な変更不要ならコミット無しで完了する）。
+# trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（正当な変更不要・要件更新タスクはコミット無しで完了する）。
 # gen-<n>-task-<i>.md（完了レポート）が既にあるタスクはスキップする（再開のチェックポイント）。
 trinity::generate() {
   local loop="$1" idx title files prompt pre_sha agent_body
