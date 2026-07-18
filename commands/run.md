@@ -15,6 +15,8 @@ argument-hint: "<issue number(s) or a short requirement>"
 
 要件を受け取る（Issue 番号でも自由形式の文でもよい）。設計が分岐するほどの曖昧さがあれば、起動の前にここで `AskUserQuestion` を使って詰める。あなたはフォアグラウンドにいるので `AskUserQuestion` をネイティブに呼べる。要件レベルの曖昧さをここで解消しておくほど、背景の Planner が確認に戻る必要が減る。
 
+メイン会話が **auto 許可モード**のときは、手順2以降の worktree・ブランチ作成が無駄になる——後段の `trinity supervise` 起動（手順3）が成立しないためである。理由と回避策は README.md の Permission Mode を参照し、着手前にここで確認する。
+
 ### 2. Setup
 
 環境構築の前に、`git-flow` スキルと `code-review` コマンドが導入済みかを確認する。未導入のものがあれば、`/trinity:run` 起動を暗黙の許可とみなし、確認なしで自動セットアップを実施する（`~/.claude` への変更を含む）。
@@ -40,8 +42,6 @@ slug<TAB>worktree<TAB>branch<TAB>title
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/trinity" supervise "${SESSION_DIR}"
 ```
-
-メイン会話が **auto 許可モード**のときは、この起動が成立しない。背景タスクとして起動すればターン終了のたびに停止し、切り離して起動すれば安全分類器に拒否される。回避策と詳しい理由は README.md の Permission Mode を参照する。
 
 ### 4. Monitor
 

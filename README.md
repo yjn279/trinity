@@ -108,14 +108,14 @@ Trinity を動かすには、以下のスキル／コマンドが必要である
 
 ### Permission Mode
 
-Trinity は、Orchestrator が監視係 `trinity supervise` を起動し、その配下で無人稼働する子プロセス群（`trinity loop`）を回すことを前提にしている。Claude Code のメイン会話を **auto 許可モード**で使うと、この前提が環境と噛み合わず、起動直後に処理が止まる。理由は次の二つである。
+Claude Code のメイン会話を **auto 許可モード**で使うと、監視係 `trinity supervise` の起動直後に処理が止まる。理由は次の二つである。
 
 - 監視係を harness の背景タスクとして起動すると、アシスタントが返答するたびに harness がその背景タスクを停止し、ぶら下がっていた子プロセスごと落ちる。
 - 停止を避けて `nohup` などで監視の外へ切り離して起動すると、auto 許可モードの安全分類器が「監視の外で自律的に動くエージェントの起動」として拒否する。会話中に利用者が明示的に許可しても、この分類器は解除されない。
 
-有効な回避策は次のいずれかである。
+回避策は次のいずれかである。
 
-- Claude Code の外の別ターミナルで `trinity supervise` を実行する。harness による停止も安全分類器の拒否も掛からず、パイプラインは生き続ける。Orchestrator はメイン会話に残り、`status` ファイルの監視と `ask/q`・`ask/a` ファイルでの確認運搬で進行を担える。
+- Claude Code の外の別ターミナルで `trinity supervise` を実行する。Orchestrator はメイン会話に残り、`status` ファイルの監視と `ask/q`・`ask/a` ファイルでの確認運搬で進行を担える。
 - auto 許可モードを外し、起動時の権限プロンプトを都度承認する。
 - `bin/trinity` の実行を、あらかじめ許可する Bash 権限ルールとして Claude Code の設定に加える。
 
