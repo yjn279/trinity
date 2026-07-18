@@ -65,15 +65,23 @@ trinity::verdict_of() {
   awk '/^VERDICT:/{print $2; exit}' "$1" 2>/dev/null
 }
 
-# trinity::assert_commit PRE_SHA CONTEXT — コミットが作成されたか検証し、なければ error で終了。
-trinity::assert_commit() {
-  local pre_sha="$1" context="$2" post_sha
+# trinity::assert_progress PRE_SHA REPORT CONTEXT — コミットまたは完了レポートの存在を検証する。
+# コミットが有れば従来どおり継続。無くても完了レポート（REPORT）があれば実装役が正当な
+# 変更不要（no-op）と判断して理由を記した完了であり、継続してレポートの所在を記録する。
+# どちらも無ければ実装役が完了できなかった真の失敗として error で終了する。
+trinity::assert_progress() {
+  local pre_sha="$1" report="$2" context="$3" post_sha
   post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
-  if [ "${pre_sha}" = "${post_sha}" ]; then
-    trinity::log "${context}: Generator がコミットを作成しなかった"
-    trinity::status error
-    return 1
+  if [ "${pre_sha}" != "${post_sha}" ]; then
+    return 0
   fi
+  if [ -f "${report}" ]; then
+    trinity::log "${context}: 変更不要（no-op）。理由は ${report} を参照"
+    return 0
+  fi
+  trinity::log "${context}: Generator がコミットも完了レポートも作成しなかった"
+  trinity::status error
+  return 1
 }
 
 # trinity::base — リモートデフォルトブランチとの merge-base（diff・レビュー範囲の起点）。
@@ -155,7 +163,7 @@ trinity::generate() {
 - TaskFiles: ${files}"
     trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
       > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
-    trinity::assert_commit "${pre_sha}" "generate task ${idx}"
+    trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-task-${idx}.md" "generate task ${idx}"
   done < "${RUN_DIR}/tasks.tsv"
 }
 
@@ -173,7 +181,7 @@ trinity::revise() {
 - 修正モード: ${RUN_DIR}/eval-$((loop - 1)).md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
   trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
-  trinity::assert_commit "${pre_sha}" "revise"
+  trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-revise.md" "revise"
 }
 
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
