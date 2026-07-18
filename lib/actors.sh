@@ -65,17 +65,21 @@ trinity::verdict_of() {
   awk '/^VERDICT:/{print $2; exit}' "$1" 2>/dev/null
 }
 
-# trinity::assert_progress PRE_SHA REPORT CONTEXT — コミットまたは完了レポートの存在を検証する。
-# コミットが有れば従来どおり継続。無くても完了レポート（REPORT）があれば実装役が正当な
-# 変更不要（no-op）と判断して理由を記した完了であり、継続してレポートの所在を記録する。
-# どちらも無ければ実装役が完了できなかった真の失敗として error で終了する。
+# trinity::has_report FILE — 完了レポート（空でない）の有無を判定する。
+# タスク完了の信号として複数箇所（assert_progress・チェックポイント再開判定）で共有する。
+trinity::has_report() {
+  [ -s "$1" ]
+}
+
+# trinity::assert_progress PRE_SHA REPORT CONTEXT — コミットか非空の完了レポートがあれば継続する。
+# どちらも無ければ実装役の真の失敗として error で終了する。
 trinity::assert_progress() {
   local pre_sha="$1" report="$2" context="$3" post_sha
   post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   if [ "${pre_sha}" != "${post_sha}" ]; then
     return 0
   fi
-  if [ -f "${report}" ]; then
+  if trinity::has_report "${report}"; then
     trinity::log "${context}: 変更不要（no-op）。理由は ${report} を参照"
     return 0
   fi
@@ -141,7 +145,7 @@ trinity::plan() {
   return 0
 }
 
-# trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（1タスク=1コミット）。
+# trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（正当な変更不要ならコミット無しで完了する）。
 # gen-<n>-task-<i>.md（完了レポート）が既にあるタスクはスキップする（再開のチェックポイント）。
 trinity::generate() {
   local loop="$1" idx title files prompt pre_sha agent_body
@@ -150,7 +154,7 @@ trinity::generate() {
   agent_body="$(trinity::agent_body generator)"
   while IFS=$'\t' read -r idx title files; do
     case "${idx}" in ''|*[!0-9]*) continue ;; esac   # 空行・ヘッダ行を飛ばす
-    if [ -f "${RUN_DIR}/gen-${loop}-task-${idx}.md" ]; then
+    if trinity::has_report "${RUN_DIR}/gen-${loop}-task-${idx}.md"; then
       trinity::log "generate loop ${loop} task ${idx}/${total}: スキップ（完了済み）"
       continue
     fi
@@ -171,14 +175,14 @@ trinity::generate() {
 # gen-<n>-revise.md（完了レポート）が既にあればスキップする（再開のチェックポイント）。
 trinity::revise() {
   local loop="$1" prompt pre_sha
-  if [ -f "${RUN_DIR}/gen-${loop}-revise.md" ]; then
+  if trinity::has_report "${RUN_DIR}/gen-${loop}-revise.md"; then
     trinity::log "gen-${loop}-revise.md が既にある。revise をスキップする"
     return 0
   fi
   trinity::status generating
   pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
-- 修正モード: ${RUN_DIR}/eval-$((loop - 1)).md の指摘を既存計画の範囲内で修正し、コミットする。新規タスクは追加しない。"
+- 修正モード: ${RUN_DIR}/eval-$((loop - 1)).md の指摘を既存計画の範囲内で修正する。新規タスクは追加しない。"
   trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
   trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-revise.md" "revise"
