@@ -41,6 +41,8 @@ slug<TAB>worktree<TAB>branch<TAB>title
 "${CLAUDE_PLUGIN_ROOT}/bin/trinity" supervise "${SESSION_DIR}"
 ```
 
+メイン会話が **auto 許可モード**のときは、この起動が成立しない。背景タスクとして起動すればターン終了のたびに停止し、切り離して起動すれば安全分類器に拒否される。回避策と詳しい理由は README.md の Permission Mode を参照する。
+
 ### 4. Monitor
 
 `supervise` は `needs-input` か `done` を返す。それに従って対応し、`done` まで手順3を繰り返す。
