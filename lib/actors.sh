@@ -210,7 +210,9 @@ trinity::intent() {
   for f in "${RUN_DIR}"/eval-*.md; do
     [ -e "$f" ] || continue
     trinity::settled_verdict "$f" >/dev/null || continue
-    evals="${evals}${evals:+, }$(basename "$f")"
+    # 道具は WORKTREE_DIR を cwd として起動するため（trinity::claude）、RUN_DIR は
+    # cwd から相対的に特定できない。basename ではなく絶対パスで渡す。
+    evals="${evals}${evals:+, }${f}"
   done
   cat <<EOF
 
