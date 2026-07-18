@@ -50,12 +50,12 @@ Trinity が計画・実装を扱う処理単位を、粒度の大きい順に定
 | :-- | :-- |
 | セッション | `/trinity:run` の起動から、PR 作成・マージ候補の確認・改善提案（課題起票）・クリーンアップまでの、コマンド1回の実行全体。複数のパイプラインを束ねる最上位の単位 |
 | パイプライン | 1つの Worktree で実行される処理系列。ループを Production-Ready な品質水準に達するまで繰り返し、1つの PR を作成するまでの流れ |
-| ループ | パイプライン内で繰り返される `Plan → Generator → 道具 → Evaluator` の1周。道具（`/code-review --fix`・`/simplify`・`/verify`）で機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める |
+| ループ | パイプライン内で繰り返される `Plan → Generator → 道具 → Evaluator` の1周。道具（`/code-review --fix`・`/simplify`・`/verify`）は要件と決着済みの評価を意図として受け取り、決着済みの判断を蒸し返さず必要な挙動を壊さない範囲で機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める |
 | タスク | 各 Generator が実施する、独立して動作し単独で検証可能な最小実装単位。既存コードが要件をすでに満たしていれば、コミットせず理由をレポートに残すことも正当な完了とする |
 
 ## Processing Flow
 
-全体像を図に示す。Orchestrator が起動可能な Issue を `backlog.tsv` に渡し、`trinity supervise` が各 Issue のパイプライン（`trinity loop`）を背景起動する。各ループは道具で機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める。
+全体像を図に示す。Orchestrator が起動可能な Issue を `backlog.tsv` に渡し、`trinity supervise` が各 Issue のパイプライン（`trinity loop`）を背景起動する。各ループは道具に要件と決着済みの評価を意図として渡し機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める。
 
 ```mermaid
 flowchart LR
@@ -89,10 +89,10 @@ flowchart LR
 | 判定 | 動作 |
 | :-- | :-- |
 | `PASS` | 4軸すべてを満たす。ループを離脱して PR 作成へ進む |
-| `NEEDS_REVISION` | 計画・要件が誤り。Planner が再計画する。要件自体が疑わしければ Planner が `## 要確認の論点` でユーザーに差し戻す |
+| `NEEDS_REVISION` | 計画・要件の見直しが要る。要件自体が誤っていれば Planner が `## 要確認の論点` でユーザーに差し戻す。道具や実装が現在の要件より良い改善をもたらしたときは、Evaluator が `## 要件への意見` で signal し、Planner が既定でそれを追認して `requirement.md` を現在の正へ更新するタスクを立てる（ユーザーには戻さない） |
 | `FAIL` | 既存計画の範囲内で Generator が修正する |
 
-`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。PR 確定後の確認は原則まとめて（1回の `AskUserQuestion` コールで）行い、修正要望が入った場合はその Issue の後処理を再収束後に改めて確認する。手続きの詳細は `commands/run.md` を単一の正とする。計画中に設計分岐が見つかった場合も同様に、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
+`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。ラン中に要件が進化していれば PR 本文にその旨を明記し、人間のレビューを最後の砦とする。PR 確定後の確認は原則まとめて（1回の `AskUserQuestion` コールで）行い、修正要望が入った場合はその Issue の後処理を再収束後に改めて確認する。手続きの詳細は `commands/run.md` を単一の正とする。計画中に設計分岐が見つかった場合も同様に、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
 
 ## Prerequisites
 

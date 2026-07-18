@@ -40,10 +40,11 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 出力者 | 成果物 | 読む側 |
 | :-- | :-- | :-- |
 | Orchestrator | `${SESSION_DIR}/backlog.tsv`（薄い起動リスト：slug・worktree・branch・title） | `bin/trinity supervise` |
+| Orchestrator（初期書き込み）・Generator（要件更新タスク時に現在の正へ書き換え） | `${RUN_DIR}/requirement.md`（要件・確定事項） | Planner・道具・Evaluator |
 | Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
-| Generator | worktree 内のコミット(SHA、正当な変更不要のときは無し)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
+| Generator | worktree 内のコミット(SHA、正当な変更不要・要件更新タスクのときは無し)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |
-| Evaluator | `${RUN_DIR}/eval-<n>.md`（先頭行 `VERDICT:`） | Planner（次ループ）・パイプライン |
+| Evaluator | `${RUN_DIR}/eval-<n>.md`（先頭行 `VERDICT:`。改善は `## 要件への意見` で signal） | Planner（次ループ）・パイプライン |
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
 | Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
 | Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
@@ -65,6 +66,8 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | AskUserQuestion はフォアグラウンド限定 | `AskUserQuestion` を呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` を surface し、パイプラインが `needs-input` でブロックして Orchestrator の運搬を待つ。 |
 | ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・`backlog.tsv`・各ランの `plan.md`・`tasks.tsv`・ループごとのスナップショット `plan-*.md`・`eval-*.md`・`gen-*.md`・`review-*.md`・`simplify-*.md`・`verify-*.md`・`status`・`planner-*.out`・`gen-*.out`・`evaluator-*.out`・`pipeline.out`）はデバッグのためクリーンアップで削除しない。 |
 | 3値判定 | Evaluator は `eval-<n>.md` 先頭行 `VERDICT:` に `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。 |
+| 道具は意図の統治下 | `/code-review --fix`・`/simplify`・`/verify` は起動時に `requirement.md` と決着済みの `eval-*.md` を意図として受け取る（`lib/actors.sh` の `trinity::intent`）。決着済みの判断を蒸し返さず、要件が必要とする挙動を壊さない範囲で修正する。道具の改善提案そのものは妨げず、採否は後段の Evaluator・Planner が判断する。道具のコミット権は維持する。 |
+| 要件は進化可能・却下は本物のリグレッションのみ | 道具や実装が現在の要件より良い改善をもたらしたとき、Evaluator は却下せず `## 要件への意見` で signal する（`NEEDS_REVISION`）。要件を進化させると決めるのは Planner の判断、`requirement.md` を現在の正へ書き換えるのは Generator の実行であり、Planner 自身は要件ファイルを書かない。この追認はユーザーに差し戻さず、最後の砦は PR レビュー（要件が進化したランでは PR 本文に明記する）。却下してよいのは、案件が必要とする挙動が実際に失われた本物のリグレッションに限る。 |
 
 ## Conventions
 
