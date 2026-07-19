@@ -28,7 +28,7 @@ Trinity の開発では以下のスキルを依存として用いる。仕様・
 | :-- | :-- | :-- | :-- |
 | Orchestrator | メイン会話 | — | 要件解釈・ユーザー対話・環境構築・背景パイプラインの dispatch と監視・PR 作成・確認・クリーンアップ |
 | Planner | opus | 読み書き可 | 要件を `plan.md` と機械可読な `tasks.tsv` に展開しタスクに分割する |
-| Generator | sonnet | 読み書き可 | 割り当てタスクを worktree 内で実装しコミットする（既存コードが要件を満たし加えるべき差分が無ければ、コミットせず理由をレポートに残す） |
+| Generator | sonnet | 読み書き可 | 割り当てタスクを worktree 内で実装しコミットする（既存コードが要件を満たし加えるべき差分が無ければコミットせず理由をレポートに残す。要件更新タスクでは `requirement.md` を現在の正へ書き換える） |
 | Evaluator | sonnet | 読み取り専用 | コミットを4軸で独立評価し3値判定を書く |
 
 frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。この境界は二層の機構で enforce する。git は PATH レベルの shim `lib/git-shim/git` が exec 時点の argv で判定し（Planner・Evaluator は読み取り専用サブコマンドの allowlist、Generator は push・commit --amend/--no-verify の denylist）、Write/Edit（および NotebookEdit）は `lib/guard.sh` の PreToolUse フックが判定する。両方とも `trinity::claude` が per-actor に注入し、frontmatter の `tools:` はあくまで意図表現である。

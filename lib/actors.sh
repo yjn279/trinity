@@ -67,8 +67,8 @@ trinity::verdict_of() {
 
 # trinity::settled_verdict FILE — VERDICT が決着済み（PASS/NEEDS_REVISION/FAIL）ならその値を出力し
 # 0 を返す。VERDICT行のない・壊れたファイル（評価役クラッシュ等）は未決着として 1 を返す。
-# 「決着済みか」の判定を一箇所に集約し、bin/trinity の loop::resume_point と本ファイルの
-# trinity::intent の両方から共有する。
+# 「決着済みか」の判定を一箇所に集約し、trinity::settled_eval_files と trinity::evaluate の
+# 両方から共有する。
 trinity::settled_verdict() {
   local verdict
   verdict="$(trinity::verdict_of "$1")"
@@ -76,6 +76,18 @@ trinity::settled_verdict() {
     PASS | NEEDS_REVISION | FAIL) printf '%s\n' "${verdict}"; return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# trinity::settled_eval_files — RUN_DIR 配下の決着済み eval-*.md を「絶対パス<TAB>VERDICT」の
+# 形式で1行1件出力する。bin/trinity の loop::resume_point（最大ループ番号の特定）と
+# trinity::intent（道具への証拠列挙）の両方が使う列挙処理を一箇所に集約する。
+trinity::settled_eval_files() {
+  local f verdict
+  for f in "${RUN_DIR}"/eval-*.md; do
+    [ -f "$f" ] || continue
+    verdict="$(trinity::settled_verdict "$f")" || continue
+    printf '%s\t%s\n' "$f" "${verdict}"
+  done
 }
 
 # trinity::has_report FILE — 完了レポート（空でない）の有無を判定する。
@@ -207,13 +219,11 @@ trinity::revise() {
 # （要件より良い改善があってよく、その採否は後段の評価役・計画役が判断する）。
 trinity::intent() {
   local evals="" f
-  for f in "${RUN_DIR}"/eval-*.md; do
-    [ -e "$f" ] || continue
-    trinity::settled_verdict "$f" >/dev/null || continue
-    # 道具は WORKTREE_DIR を cwd として起動するため（trinity::claude）、RUN_DIR は
-    # cwd から相対的に特定できない。basename ではなく絶対パスで渡す。
+  # 道具は WORKTREE_DIR を cwd として起動するため（trinity::claude）、RUN_DIR は
+  # cwd から相対的に特定できない。trinity::settled_eval_files が返す絶対パスをそのまま使う。
+  while IFS=$'\t' read -r f _; do
     evals="${evals}${evals:+, }${f}"
-  done
+  done < <(trinity::settled_eval_files)
   cat <<EOF
 
 
@@ -228,26 +238,30 @@ trinity::intent() {
 EOF
 }
 
+# trinity::tool_step CMD OUTFILE LABEL INTENT — 道具コマンドを意図つきで1回実行する。
+# 失敗しても止めず、WARN ログを残してパイプラインを続行する。
+trinity::tool_step() {
+  local cmd="$1" outfile="$2" label="$3" intent="$4"
+  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
+    "${cmd}${intent}" > "${outfile}" 2>&1 \
+    || trinity::log "WARN: ${label} が非ゼロで終了した"
+}
+
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
 trinity::tools() {
   local loop="$1" base intent; base="$(trinity::base)"; intent="$(trinity::intent)"
   trinity::status reviewing
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/code-review --fix ${base}..HEAD${intent}" > "${RUN_DIR}/review-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /code-review --fix が非ゼロで終了した"
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/simplify${intent}" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /simplify が非ゼロで終了した"
+  trinity::tool_step "/code-review --fix ${base}..HEAD" "${RUN_DIR}/review-${loop}.md" \
+    "/code-review --fix" "${intent}"
+  trinity::tool_step "/simplify" "${RUN_DIR}/simplify-${loop}.md" "/simplify" "${intent}"
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
     git -C "${WORKTREE_DIR}" add -A || true
     git -C "${WORKTREE_DIR}" commit -q -m "chore: 道具の自動修正を反映する" || true
   fi
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。${intent}" \
-    > "${RUN_DIR}/verify-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /verify が非ゼロで終了した"
+  trinity::tool_step "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。" \
+    "${RUN_DIR}/verify-${loop}.md" "/verify" "${intent}"
 }
 
 # trinity::evaluate LOOP — Evaluator を起動し eval-<n>.md を書かせる。戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=不明。
@@ -259,11 +273,10 @@ trinity::evaluate() {
 - 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
   trinity::claude evaluator "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${RUN_DIR}/evaluator-${loop}.out" 2>&1 || true
-  verdict="$(trinity::verdict_of "${RUN_DIR}/eval-${loop}.md")"
+  verdict="$(trinity::settled_verdict "${RUN_DIR}/eval-${loop}.md")" || { trinity::status error; return 1; }
   case "${verdict}" in
     PASS)           trinity::status passed;        return 0 ;;
     NEEDS_REVISION) trinity::status needs-revision; return 2 ;;
     FAIL)           trinity::status revising;       return 3 ;;
-    *)              trinity::status error;          return 1 ;;
   esac
 }

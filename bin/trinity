@@ -69,14 +69,12 @@ loop_main() {
   # 同型の作法であり、loop_main 内でのみ呼び出す前提に依存する。
   loop::resume_point() {
     local k=0 k_verdict="" num="" verdict="" f
-    for f in "${RUN_DIR}"/eval-*.md; do
-      [ -f "$f" ] || continue
+    while IFS=$'\t' read -r f verdict; do
       num="${f##*/eval-}"
       num="${num%.md}"
       case "${num}" in *[!0-9]*) continue ;; esac
-      verdict="$(trinity::settled_verdict "$f")" || continue
       if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
-    done
+    done < <(trinity::settled_eval_files)
 
     if [ "${REDRIVE}" -eq 1 ]; then
       printf '%s plan\n' "$((k + 1))"; return
