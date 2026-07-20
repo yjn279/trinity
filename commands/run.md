@@ -29,7 +29,7 @@ argument-hint: "<issue number(s) or a short requirement>"
 slug<TAB>worktree<TAB>branch<TAB>title
 ```
 
-後続 Issue（先行の完了を待つもの）は、先行が `passed` に達したときに worktree を用意して backlog に追記し、手順3を再実行する。
+後続 Issue（先行の完了を待つもの）は、先行を含む現在の `supervise` が `EVENT: done` に達してから（手順4）、worktree を用意して backlog に追記し、手順3を再実行する。他の Issue が実行中のうちに再実行すると、同一セッションに対して `supervise` が二重に立ち上がる。
 
 既に作業環境が構築済みの場合はそれを再利用する。
 
