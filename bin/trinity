@@ -9,8 +9,10 @@
 #       RUN_DIR/redrive があれば修正要望として requirement.md に追記し、最大 eval 番号 + 1
 #       から plan モードで、その開始ループから TRINITY_MAX_LOOPS 回ぶんの予算で再収束する。
 #   supervise <SESSION_DIR>
-#       backlog.tsv（slug・worktree・branch・title）の各行を背景起動し、
-#       needs-input か done のイベントまでブロックして STATUS 表と EVENT: を返す。
+#       backlog.tsv（slug・worktree・branch・title）の各行を通常の背景ジョブとして起動し、
+#       全案件が終端（passed・failed・error）に達するまで生き続ける。needs-input が
+#       新たに現れるたびに STATUS 表と ISSUE:/Q: 行、EVENT: needs-input を逐次出力し
+#       （同一案件の重複出力はしない）、全案件が終端に達したら EVENT: done を出して終了する。
 
 set -euo pipefail
 
@@ -225,38 +227,46 @@ supervise_main() {
     mkdir -p "${run_dir}"
     printf 'queued\n' > "${run_dir}/status"
     printf 'supervise: launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}" >&2
-    nohup "${TRINITY_ROOT}/bin/trinity" loop "${run_dir}" "${worktree}" "${branch}" \
+    "${TRINITY_ROOT}/bin/trinity" loop "${run_dir}" "${worktree}" "${branch}" \
       >> "${run_dir}/pipeline.out" 2>&1 &
     printf '%s\n' "$!" > "${run_dir}/pid"
     launched=$((launched + 1))
   done < "${BACKLOG}"
   printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
 
-  # needs-input（確認待ち）か、全 Issue が終端（done）になるまで監視する。
-  local needs_input running s
+  # 全 Issue が終端（passed・failed・error）になるまで生き続け、needs-input が
+  # 新たに現れた縁でだけ1回 surface する（reported に留まる間は再出力しない）。
+  local reported="" still_needs_input new_needs_input running s
   while :; do
-    needs_input=""
+    still_needs_input=""
+    new_needs_input=""
     running=0
     while IFS=$'\t' read -r slug _rest; do
       { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue
       s="$(status_of "${slug}")"
       case "${s}" in
-        needs-input)             needs_input="${needs_input} ${slug}" ;;
+        needs-input)
+          still_needs_input="${still_needs_input} ${slug}"
+          case " ${reported} " in
+            *" ${slug} "*) ;;
+            *) new_needs_input="${new_needs_input} ${slug}" ;;
+          esac
+          ;;
         passed | failed | error) ;;
-        *)                       running=$((running + 1)) ;;
+        *) running=$((running + 1)) ;;
       esac
     done < "${BACKLOG}"
+    reported="${still_needs_input}"
 
-    if [ -n "${needs_input}" ]; then
+    if [ -n "${new_needs_input}" ]; then
       print_status
-      for slug in ${needs_input}; do
+      for slug in ${new_needs_input}; do
         printf 'ISSUE: %s\tQ: %s/%s/ask/q\n' "${slug}" "${SESSION_DIR}" "${slug}"
       done
       printf 'EVENT: needs-input\n'
-      exit 0
     fi
 
-    if [ "${running}" -eq 0 ]; then
+    if [ "${running}" -eq 0 ] && [ -z "${still_needs_input}" ]; then
       print_status
       printf 'EVENT: done\n'
       exit 0
