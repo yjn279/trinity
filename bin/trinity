@@ -15,18 +15,11 @@ set -euo pipefail
 TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export TRINITY_ROOT
 
-trinity::usage() {
-  [ -n "${1:-}" ] && printf 'trinity: %s\n' "$1" >&2
+[ "${1:-}" = loop ] || {
   printf '使い方:\n  trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>\n' >&2
   exit 1
 }
-
-SUBCOMMAND="${1:-}"
-case "${SUBCOMMAND}" in
-  loop) shift ;;
-  "") trinity::usage "サブコマンドが必要です" ;;
-  *)  trinity::usage "未知のサブコマンド: ${SUBCOMMAND}" ;;
-esac
+shift
 
 # --- loop — 1 Issue の収束ループ -------------------------------------------
 loop_main() {
@@ -167,6 +160,4 @@ loop_main() {
 }
 
 # --- ディスパッチ -------------------------------------------------------------
-case "${SUBCOMMAND}" in
-  loop) loop_main "$@" ;;
-esac
+loop_main "$@"
