@@ -88,8 +88,10 @@ flowchart LR
 | 判定 | 動作 |
 | :-- | :-- |
 | `PASS` | 4軸すべてを満たす。ループを離脱して PR 作成へ進む |
-| `NEEDS_REVISION` | 計画・要件が誤り。Planner が再計画する。要件自体が疑わしければ Planner が `## 要確認の論点` でユーザーに差し戻す |
+| `NEEDS_REVISION` | 計画・要件が誤っている、または道具（`/code-review --fix`・`/simplify`）の変更が `requirement.md` と食い違う。Planner が再計画する。要件自体が誤っている疑いのときは Planner が `## 要確認の論点` でユーザーに差し戻し、道具が原因のときは Planner がその変更を追認して `requirement.md` を現在あるべき正へ更新してから計画を作り直す（仕様進化） |
 | `FAIL` | 既存計画の範囲内で Generator が修正する |
+
+道具の変更が `requirement.md` と食い違うのは、多くの場合その記述のほうが不自然だったサインである。Evaluator はこれを機械的に `FAIL` で突き返さない。突き返すと改善前への復元を招き、道具が直す→差し戻す→また直すの綱引きになる。`FAIL` は案件が実際に必要とする挙動を失った本物のリグレッションに限り、それ以外の食い違いは「改善」として `NEEDS_REVISION` に倒す。判じ切れないときも安全側、すなわち `NEEDS_REVISION` に倒す。仕様進化は Planner・Evaluator 間で完結し、人間へは戻さない。最後の砦は PR レビューである。
 
 `PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。PR 確定後の確認は原則まとめて（1回の `AskUserQuestion` コールで）行い、修正要望が入った場合はその Issue の後処理を再収束後に改めて確認する。手続きの詳細は `commands/run.md` を単一の正とする。計画中に設計分岐が見つかった場合も同様に、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
 
