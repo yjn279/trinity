@@ -33,7 +33,7 @@ Trinity の開発では以下のスキルを依存として用いる。仕様・
 
 frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。この境界は二層の機構で enforce する。git は PATH レベルの shim `lib/git-shim/git` が exec 時点の argv で判定し（Planner・Evaluator は読み取り専用サブコマンドの allowlist、Generator は push・commit --amend/--no-verify の denylist）、Write/Edit（および NotebookEdit）は `lib/guard.sh` の PreToolUse フックが判定する。両方とも `trinity::claude` が per-actor に注入し、frontmatter の `tools:` はあくまで意図表現である。
 
-機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップし、中断点から再開する。
+機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。道具の変更が `requirement.md` と食い違うときの判断は `agents/evaluator.md` の Tool Deviation を正とする。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップし、中断点から再開する。
 
 アクターは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。`claude -p` の別プロセス境界がこの間接化を強制し、Evaluator の独立性を担保する。アクターをメイン会話のネイティブ subagent ではなく `claude -p` の子プロセスとして起動するのには、この独立性のほかに2つの構造的な理由がある。第一に、ネイティブ subagent は入れ子のサブエージェントを起動できないが、`claude -p` の子はフルの Claude Code セッションなので Planner・Generator・Evaluator が自分の作業の中でさらにサブエージェントを呼べる。第二に、long-running 前提のバックグラウンド実行が、メイン会話に張り付かない子プロセスだからこそ成り立つ。Orchestrator は段と段のあいだでコードを読み書きせず、`status`・`ask/` のファイルだけを介して背景パイプラインと通信する。`backlog.tsv` はパイプラインとの通信チャネルではなく、Orchestrator 自身が Issue 集合を書き残し読み返す耐久インデックスである。通信の経路を以下に示す。
 
@@ -64,7 +64,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 受け渡しはファイルチャネル | `backlog.tsv` は Orchestrator が Issue ごとの slug・worktree・branch・title を書き残す耐久インデックスであり、fan-out は Orchestrator が backlog の各行につき `loop` を1本ずつ起動して行う。確認は `ask/q`・`ask/a`、進捗は `status`、修正要望の再収束は `redrive` の各ファイルで橋渡しする。 |
 | AskUserQuestion はフォアグラウンド限定 | `AskUserQuestion` を呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` を surface し、パイプラインが `needs-input` でブロックして Orchestrator の運搬を待つ。 |
 | ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・`backlog.tsv`・各ランの `plan.md`・`tasks.tsv`・ループごとのスナップショット `plan-*.md`・`eval-*.md`・`gen-*.md`・`review-*.md`・`simplify-*.md`・`verify-*.md`・`status`・`planner-*.out`・`gen-*.out`・`evaluator-*.out`・`pipeline.out`）はデバッグのためクリーンアップで削除しない。 |
-| 3値判定 | Evaluator は `eval-<n>.md` 先頭行 `VERDICT:` に `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。 |
+| 3値判定 | Evaluator は `eval-<n>.md` 先頭行 `VERDICT:` に `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。道具の変更が `requirement.md` と食い違うときも新しい判定値は増やさず、この3値に振り分ける（判断基準は `agents/evaluator.md` の Tool Deviation を正とする）。 |
 
 ## Conventions
 
