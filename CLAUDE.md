@@ -35,11 +35,11 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 
 機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップし、中断点から再開する。
 
-アクターは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。`claude -p` の別プロセス境界がこの間接化を強制し、Evaluator の独立性を担保する。アクターをメイン会話のネイティブ subagent ではなく `claude -p` の子プロセスとして起動するのには、この独立性のほかに2つの構造的な理由がある。第一に、ネイティブ subagent は入れ子のサブエージェントを起動できないが、`claude -p` の子はフルの Claude Code セッションなので Planner・Generator・Evaluator が自分の作業の中でさらにサブエージェントを呼べる。第二に、long-running 前提のバックグラウンド実行が、メイン会話に張り付かない子プロセスだからこそ成り立つ。Orchestrator は段と段のあいだでコードを読み書きせず、`backlog.tsv` と `status`・`ask/` のファイルだけを介して背景パイプラインと通信する。通信の経路を以下に示す。
+アクターは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。`claude -p` の別プロセス境界がこの間接化を強制し、Evaluator の独立性を担保する。アクターをメイン会話のネイティブ subagent ではなく `claude -p` の子プロセスとして起動するのには、この独立性のほかに2つの構造的な理由がある。第一に、ネイティブ subagent は入れ子のサブエージェントを起動できないが、`claude -p` の子はフルの Claude Code セッションなので Planner・Generator・Evaluator が自分の作業の中でさらにサブエージェントを呼べる。第二に、long-running 前提のバックグラウンド実行が、メイン会話に張り付かない子プロセスだからこそ成り立つ。Orchestrator は段と段のあいだでコードを読み書きせず、`status`・`ask/` のファイルだけを介して背景パイプラインと通信する。`backlog.tsv` はパイプラインとの通信チャネルではなく、Orchestrator 自身が Issue 集合を書き残し読み返す耐久インデックスである。通信の経路を以下に示す。
 
 | 出力者 | 成果物 | 読む側 |
 | :-- | :-- | :-- |
-| Orchestrator | `${SESSION_DIR}/backlog.tsv`（薄い起動リスト：slug・worktree・branch・title） | `bin/trinity supervise` |
+| Orchestrator | `${SESSION_DIR}/backlog.tsv`（Issue ごとの slug・worktree・branch・title を記す耐久インデックス） | Orchestrator 自身（起動・監視・再開のたびに読み返す） |
 | Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
 | Generator | worktree 内のコミット(SHA、正当な変更不要のときは無し)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |
@@ -47,7 +47,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
 | Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
 | Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
-| `bin/trinity supervise` | `${RUN_DIR}/pid`（起動した `loop` の PID） | `bin/trinity supervise` 自身の再起動ガード（`pid_alive` の `kill -0`） |
+| `loop` | `${RUN_DIR}/pid`（自身の PID） | Orchestrator の再起動ガード（起動前に `kill -0` で生存確認） |
 
 ## Invariants
 
@@ -61,7 +61,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}" <cmd>` で操作し、 `cd` で代替しない。ユーザーのチェックアウトには触れない。 |
 | 引用は worktree 相対 | `plan.md` ・ `eval-<n>.md` 内の `path:line` は `WORKTREE_DIR` 起点の相対パスで書く。 |
 | 成果物の置き場所 | ラン成果物は対象プロジェクト側の `.trinity/<session>/<slug>/` に、`backlog.tsv` は `.trinity/<session>/` に出る。worktree は `.trinity/` の外に出る（配置規約は git-flow スキルに従う）。このリポジトリではない。 |
-| 受け渡しは backlog.tsv とファイルチャネル | fan-out の境界は `backlog.tsv` 一枚。確認は `ask/q`・`ask/a`、進捗は `status`、修正要望の再収束は `redrive` の各ファイルで橋渡しする。 |
+| 受け渡しはファイルチャネル | `backlog.tsv` は Orchestrator が Issue ごとの slug・worktree・branch・title を書き残す耐久インデックスであり、fan-out は Orchestrator が backlog の各行につき `loop` を1本ずつ起動して行う。確認は `ask/q`・`ask/a`、進捗は `status`、修正要望の再収束は `redrive` の各ファイルで橋渡しする。 |
 | AskUserQuestion はフォアグラウンド限定 | `AskUserQuestion` を呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` を surface し、パイプラインが `needs-input` でブロックして Orchestrator の運搬を待つ。 |
 | ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・`backlog.tsv`・各ランの `plan.md`・`tasks.tsv`・ループごとのスナップショット `plan-*.md`・`eval-*.md`・`gen-*.md`・`review-*.md`・`simplify-*.md`・`verify-*.md`・`status`・`planner-*.out`・`gen-*.out`・`evaluator-*.out`・`pipeline.out`）はデバッグのためクリーンアップで削除しない。 |
 | 3値判定 | Evaluator は `eval-<n>.md` 先頭行 `VERDICT:` に `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。 |

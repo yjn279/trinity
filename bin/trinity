@@ -4,31 +4,22 @@
 # サブコマンド:
 #   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
 #       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
-#       確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
-#       再起動時は RUN_DIR の既存成果物から中断点を判定して再開する。
-#       RUN_DIR/redrive があれば修正要望として requirement.md に追記し、最大 eval 番号 + 1
-#       から plan モードで、その開始ループから TRINITY_MAX_LOOPS 回ぶんの予算で再収束する。
-#   supervise <SESSION_DIR>
-#       backlog.tsv（slug・worktree・branch・title）の各行を背景起動し、
-#       needs-input か done のイベントまでブロックして STATUS 表と EVENT: を返す。
+#       起動時に自身の PID を RUN_DIR/pid に記録する。確認が要るときは RUN_DIR/ask/q を
+#       書いて needs-input でブロックする。再起動時は RUN_DIR の既存成果物から中断点を
+#       判定して再開する。RUN_DIR/redrive があれば修正要望として requirement.md に追記し、
+#       最大 eval 番号 + 1 から plan モードで、その開始ループから TRINITY_MAX_LOOPS 回ぶんの
+#       予算で再収束する。
 
 set -euo pipefail
 
 TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export TRINITY_ROOT
 
-trinity::usage() {
-  [ -n "${1:-}" ] && printf 'trinity: %s\n' "$1" >&2
-  printf '使い方:\n  trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>\n  trinity supervise <SESSION_DIR>\n' >&2
+[ "${1:-}" = loop ] || {
+  printf '使い方:\n  trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>\n' >&2
   exit 1
 }
-
-SUBCOMMAND="${1:-}"
-case "${SUBCOMMAND}" in
-  loop | supervise) shift ;;
-  "") trinity::usage "サブコマンドが必要です" ;;
-  *)  trinity::usage "未知のサブコマンド: ${SUBCOMMAND}" ;;
-esac
+shift
 
 # --- loop — 1 Issue の収束ループ -------------------------------------------
 loop_main() {
@@ -39,6 +30,7 @@ loop_main() {
   export RUN_DIR WORKTREE_DIR BRANCH
 
   mkdir -p "${RUN_DIR}/ask"
+  printf '%s\n' "$$" > "${RUN_DIR}/pid"
   # shellcheck source=lib/actors.sh
   . "${TRINITY_ROOT}/lib/actors.sh"
 
@@ -128,10 +120,10 @@ loop_main() {
   # max_loop は二役を持つ: 通常時は絶対上限（TRINITY_MAX_LOOPS そのもの）、
   # redrive 時は開始ループ相対の上限（loop + TRINITY_MAX_LOOPS - 1）。
   # この予算相対化は redrive が terminal な Issue（プロセス消滅済み）への新規
-  # 収束試行であることを前提とする。round 途中で supervise ごとクラッシュし
+  # 収束試行であることを前提とする。round 途中で loop プロセスごとクラッシュし
   # 再起動された場合、この拡張予算はディスクへ永続しないため失われる（既知の
-  # 限界。永続化は状態機械の追加が要るため別 Issue で扱う。本硬化では pid 生存
-  # チェックで mid-flight の二重起動のみ防ぐ）。
+  # 限界。永続化は状態機械の追加が要るため別 Issue で扱う。本硬化では Orchestrator
+  # の pid 生存チェックで mid-flight の二重起動のみ防ぐ）。
   local max_loop="${TRINITY_MAX_LOOPS}"
   [ "${REDRIVE}" -eq 1 ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
 
@@ -167,107 +159,5 @@ loop_main() {
   exit 2
 }
 
-# --- supervise — Issue 群の起動＋監視 --------------------------------------
-# 並列数は Orchestrator が backlog に書く行数で決まる（シェルは上限を持たない）。
-supervise_main() {
-  local SESSION_DIR BACKLOG
-  SESSION_DIR="${1:?usage: trinity supervise <SESSION_DIR>}"
-  BACKLOG="${SESSION_DIR}/backlog.tsv"
-
-  local _bwait=0
-  while [ ! -f "${BACKLOG}" ]; do
-    sleep 1
-    _bwait=$((_bwait + 1))
-    if [ "${_bwait}" -ge 30 ]; then
-      printf 'supervise: backlog.tsv が見つからない: %s\n' "${BACKLOG}" >&2
-      exit 1
-    fi
-  done
-
-  status_of() {
-    local f="${SESSION_DIR}/$1/status"
-    [ -f "$f" ] && printf '%s\n' "$(< "$f")" || echo "-"
-  }
-
-  # $1（pid ファイル）が指すプロセスが生存していれば真を返す。ファイルが無い・
-  # 空・数値でない場合は「生存」とみなさない（安全側＝再起動を許す側に倒す）。
-  pid_alive() {
-    local pid
-    pid="$(cat "$1" 2>/dev/null || true)"
-    case "${pid}" in
-      '' | *[!0-9]*) return 1 ;;
-    esac
-    kill -0 "${pid}" 2>/dev/null
-  }
-
-  print_status() {
-    printf 'STATUS\n'
-    while IFS=$'\t' read -r slug _rest; do
-      { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue
-      printf '  %s\t%s\n' "${slug}" "$(status_of "${slug}")"
-    done < "${BACKLOG}"
-  }
-
-  # backlog の各行を背景起動する（既に status がある行は再起動しない。ただし
-  # redrive マーカーがあり、かつその run_dir の pid（既存の loop 起動時に書く
-  # ${run_dir}/pid）が生存していない（terminal）場合のみ、修正要望の再収束の
-  # ため例外的に再起動する。pid が生存している間（mid-flight）は redrive が
-  # あっても再起動せず、同一 worktree に2本目の loop が走る二重起動を防ぐ）。
-  local launched=0 slug worktree branch title run_dir
-  while IFS=$'\t' read -r slug worktree branch title; do
-    { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue   # 空行・ヘッダ行を飛ばす
-    run_dir="${SESSION_DIR}/${slug}"
-    if [ -f "${run_dir}/status" ]; then
-      if [ ! -f "${run_dir}/redrive" ] || pid_alive "${run_dir}/pid"; then
-        continue
-      fi
-    fi
-    mkdir -p "${run_dir}"
-    printf 'queued\n' > "${run_dir}/status"
-    printf 'supervise: launch %s\t(branch %s)\t%s\n' "${slug}" "${branch}" "${title}" >&2
-    nohup "${TRINITY_ROOT}/bin/trinity" loop "${run_dir}" "${worktree}" "${branch}" \
-      >> "${run_dir}/pipeline.out" 2>&1 &
-    printf '%s\n' "$!" > "${run_dir}/pid"
-    launched=$((launched + 1))
-  done < "${BACKLOG}"
-  printf 'supervise: %d 本のパイプラインを起動した\n' "${launched}" >&2
-
-  # needs-input（確認待ち）か、全 Issue が終端（done）になるまで監視する。
-  local needs_input running s
-  while :; do
-    needs_input=""
-    running=0
-    while IFS=$'\t' read -r slug _rest; do
-      { [ -z "${slug}" ] || [ "${slug}" = slug ]; } && continue
-      s="$(status_of "${slug}")"
-      case "${s}" in
-        needs-input)             needs_input="${needs_input} ${slug}" ;;
-        passed | failed | error) ;;
-        *)                       running=$((running + 1)) ;;
-      esac
-    done < "${BACKLOG}"
-
-    if [ -n "${needs_input}" ]; then
-      print_status
-      for slug in ${needs_input}; do
-        printf 'ISSUE: %s\tQ: %s/%s/ask/q\n' "${slug}" "${SESSION_DIR}" "${slug}"
-      done
-      printf 'EVENT: needs-input\n'
-      exit 0
-    fi
-
-    if [ "${running}" -eq 0 ]; then
-      print_status
-      printf 'EVENT: done\n'
-      exit 0
-    fi
-
-    sleep 5
-  done
-}
-
 # --- ディスパッチ -------------------------------------------------------------
-case "${SUBCOMMAND}" in
-  loop)      loop_main "$@" ;;
-  supervise) supervise_main "$@" ;;
-esac
+loop_main "$@"
