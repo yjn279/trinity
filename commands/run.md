@@ -35,7 +35,7 @@ slug<TAB>worktree<TAB>branch<TAB>title
 
 ### 3. Launch
 
-`trinity supervise` を呼び、`backlog.tsv` を読んで起動可能な Issue を背景で立てる。コマンドは起動後、手当てが要るイベントまでブロックして待ち、`STATUS` 表と `EVENT:` 行を返す。
+`trinity supervise` を Bash ツールの `run_in_background` で背景タスクとして起動する。`supervise` は `backlog.tsv` を読んで起動可能な Issue を通常の背景ジョブとして立ち上げ、担当 Issue がすべて終端（passed/failed/error）に達するまで生き続ける。
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/trinity" supervise "${SESSION_DIR}"
@@ -43,14 +43,14 @@ slug<TAB>worktree<TAB>branch<TAB>title
 
 ### 4. Monitor
 
-`supervise` は `needs-input` か `done` を返す。それに従って対応し、`done` まで手順3を繰り返す。
+背景タスクの出力をポーリングして読み、現れた `EVENT:` 行に従って対応する。まだ何も出ていなければ `supervise` は確認待ちにも完了にも達していないということなので、しばらく間を置いて読み直す。`done` に達するまで手順3は再実行しない——同じ背景タスクが生き続けているので、必要なのは出力を読み直すことだけである。
 
 | EVENT | 対応 |
 | :-- | :-- |
-| `needs-input` | `ISSUE:` 行の各 slug について `<RUN_DIR>/ask/q`（Planner の `## 要確認の論点`）を読み、`AskUserQuestion` でユーザーに提示する。内容は解釈・判定せず運搬する。回答を `<RUN_DIR>/ask/a` に書く——パイプラインのブロックが解け、Planner が確定事項を反映して再計画する。複数あれば Issue ごとに直列で問う。`AskUserQuestion` を呼ぶのは常にあなた一人。 |
-| `done` | 現在の backlog が全て終端（passed/failed/error）。未起動の後続 Issue があれば worktree を用意して backlog に追記し手順3を再実行する。なければ手順5へ。 |
+| `needs-input` | `ISSUE:` 行の各 slug について `<RUN_DIR>/ask/q`（Planner の `## 要確認の論点`）を読み、`AskUserQuestion` でユーザーに提示する。内容は解釈・判定せず運搬する。回答を `<RUN_DIR>/ask/a` に書く——パイプラインのブロックが解け、Planner が確定事項を反映して再計画する。複数あれば Issue ごとに直列で問う。書き終えたら同じ背景タスクのポーリングを続ける。`AskUserQuestion` を呼ぶのは常にあなた一人。 |
+| `done` | 現在の backlog が全て終端（passed/failed/error）に達し、背景タスクは終了している。未起動の後続 Issue があれば worktree を用意して backlog に追記し、新しい背景タスクとして手順3を再実行する。なければ手順5へ。 |
 
-API 課金エラーやレートリミットで途中停止しても、作業環境と `.trinity/<session>/` が残っていれば手順3を再実行すればよい。`loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
+API 課金エラーやレートリミットで背景タスクが途中で止まっても、作業環境と `.trinity/<session>/` が残っていれば手順3を再実行すればよい。`loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
 
 `<RUN_DIR>/status` が `passed` の Issue は PR 作成へ進める。`failed`（ループ上限で未到達）・`error` の Issue は、`eval-*.md`・`pipeline.out` を読んで原因をユーザーに報告する。あなたはコードを直さない。
 
