@@ -42,7 +42,10 @@ loop_main() {
   # pid を記録することで、排他制御と生存記録を単一の実体にまとめる。生存中の pid（かつ argv に
   # 自分の RUN_DIR を含む——pid 再利用による誤検知を避ける）があれば同一 worktree への
   # 二重起動として中止する。ロックが残っていても保持者が死んでいれば奪って継続する
-  # （クラッシュ再開）。
+  # （クラッシュ再開）。奪う際は rm -rf に続けて mkdir を別々に行わない: 両者を分けると
+  # 死亡判定に同時に成功した複数プロセスが互いの mkdir 直後のロックを奪い合い、全員が
+  # 「奪えた」と誤認して二重起動してしまう。mv による rename(2) は同一パスの奪い合いで
+  # 高々1プロセスしか成功しないため、これを奪取の唯一のゲートにする。
   local lock_dir="${RUN_DIR}/.pid.lock"
   if ! mkdir "${lock_dir}" 2>/dev/null; then
     local old_pid=""
@@ -52,7 +55,9 @@ loop_main() {
       trinity::log "起動中止: pid ${old_pid} が生存中のため二重起動を防ぐ"
       exit 1
     fi
-    rm -rf "${lock_dir}"
+    if mv "${lock_dir}" "${lock_dir}.stale.$$" 2>/dev/null; then
+      rm -rf "${lock_dir}.stale.$$"
+    fi
     mkdir "${lock_dir}" 2>/dev/null \
       || { trinity::log "起動中止: ロック取得に失敗した（並行起動と競合）"; exit 1; }
   fi
@@ -130,22 +135,22 @@ loop_main() {
 
   trinity::log "loop 開始: ${BRANCH}"
 
-  # redrive マーカーは「再収束が未完」の耐久状態であり、消費して即削除しない
-  # （終端 PASS／failed／error に達したとき上記 trap が削除する）。
-  # requirement.md への取り込みは一度きり: マーカーの内容が既に requirement.md に
-  # 含まれていれば、再開時の重複追記とみなして追記しない。
+  # redrive マーカーは「再収束が未完」の耐久状態であり、ファイル自体は消費して
+  # 即削除しない（終端 PASS／failed／error に達したとき上記 trap が削除する）。
+  # requirement.md への取り込みは一度きり: 取り込み後に redrive の中身を空へ切り詰め、
+  # 存在（REDRIVE フラグ、再収束が続いている印）と非空（未取り込み）を切り分けて
+  # 判定する。取り込み済みか否かをマーカー内容と requirement.md の部分一致で判定すると、
+  # 要件文と偶然重なる修正要望を誤って「取り込み済み」と取りこぼしうるため使わない。
   local REDRIVE=0
   if [ -f "${RUN_DIR}/redrive" ]; then
     REDRIVE=1
-    local redrive_text
-    redrive_text="$(cat "${RUN_DIR}/redrive")"
-    case "$(cat "${RUN_DIR}/requirement.md" 2>/dev/null || true)" in
-      *"${redrive_text}"*)
-        trinity::log "re-drive 信号は取り込み済み。requirement.md への再追記はしない" ;;
-      *)
-        { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_text}"; } >> "${RUN_DIR}/requirement.md"
-        trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する" ;;
-    esac
+    if [ -s "${RUN_DIR}/redrive" ]; then
+      { printf '\n## 修正要望（re-drive）\n'; cat "${RUN_DIR}/redrive"; } >> "${RUN_DIR}/requirement.md"
+      : > "${RUN_DIR}/redrive"
+      trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する"
+    else
+      trinity::log "re-drive 信号は取り込み済み。requirement.md への再追記はしない"
+    fi
   fi
 
   local resume loop mode rc
