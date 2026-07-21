@@ -4,11 +4,14 @@
 # サブコマンド:
 #   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
 #       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
-#       起動時に自身の PID を RUN_DIR/pid に記録する。確認が要るときは RUN_DIR/ask/q を
-#       書いて needs-input でブロックする。再起動時は RUN_DIR の既存成果物から中断点を
-#       判定して再開する。RUN_DIR/redrive があれば修正要望として requirement.md に追記し、
+#       起動時に RUN_DIR/pid の生存を確認し、生きていれば二重起動として中止する。生きて
+#       いなければ自身の PID を書いて継続する。確認が要るときは RUN_DIR/ask/q を書いて
+#       needs-input でブロックする。再起動時は RUN_DIR の既存成果物から中断点を判定して
+#       再開する。RUN_DIR/redrive があれば修正要望を requirement.md へ一度きり取り込み、
 #       最大 eval 番号 + 1 から plan モードで、その開始ループから TRINITY_MAX_LOOPS 回ぶんの
-#       予算で再収束する。
+#       予算で再収束する。redrive マーカーと pid は、再収束が新しい PASS に達するか
+#       failed／error の終端に達したときに削除する（それまでは再開のたびに読み直される
+#       耐久状態として残る）。
 
 set -euo pipefail
 
@@ -30,9 +33,27 @@ loop_main() {
   export RUN_DIR WORKTREE_DIR BRANCH
 
   mkdir -p "${RUN_DIR}/ask"
-  printf '%s\n' "$$" > "${RUN_DIR}/pid"
   # shellcheck source=lib/actors.sh
   . "${TRINITY_ROOT}/lib/actors.sh"
+
+  # 起動の原子性: 生存中の pid があれば同一 worktree への二重起動として中止する。
+  # 死んでいる・存在しない pid はこのプロセスのものへ更新して継続する（クラッシュ再開）。
+  if [ -f "${RUN_DIR}/pid" ] && kill -0 "$(cat "${RUN_DIR}/pid")" 2>/dev/null; then
+    trinity::log "起動中止: pid $(cat "${RUN_DIR}/pid") が生存中のため二重起動を防ぐ"
+    exit 1
+  fi
+  printf '%s\n' "$$" > "${RUN_DIR}/pid"
+
+  # 終端（passed／failed／error）に達したときだけ redrive マーカーと pid を削除する。
+  # status を経由で判定するので、set -e によるどの終了経路（lib/actors.sh 内の
+  # trinity::status error 経路を含む）でも EXIT トラップが同じ基準で回収する。
+  # 非終端のまま死ぬ本当のクラッシュでは trap 自体が走らず、両ファイルは残る
+  # （Orchestrator のクラッシュ再開判定はこの残存に依存する）。
+  trap '
+    case "$(cat "${RUN_DIR}/status" 2>/dev/null || true)" in
+      passed | failed | error) rm -f "${RUN_DIR}/redrive" "${RUN_DIR}/pid" ;;
+    esac
+  ' EXIT
 
   : "${TRINITY_MAX_LOOPS:=5}"
 
@@ -54,8 +75,9 @@ loop_main() {
   # RUN_DIR の既存成果物から再開ループ番号とモードを返す。
   # 出力形式: "<n> <mode>"（例: "2 plan"）。PASS 済みのときは "PASS" のみ。
   # 各段は自己スキップするため入口判定は不要。
-  # REDRIVE=1（redrive マーカーを消費済み）のときは PASS 短絡を行わず、
-  # 最大 eval 番号 + 1 を常に plan モードで返す（修正要望による再収束）。
+  # REDRIVE=1（redrive マーカーが残存）のときは、直近が旧 PASS でも短絡せず
+  # 次ループを plan で再収束させる。直近が NEEDS_REVISION／FAIL のときは通常どおり
+  # そのモードへ委ね、再収束途中の状態を保つ。
   # REDRIVE は本関数の local ではなく enclosing scope（loop_main）の local を
   # 動的スコープ経由で参照する。loop::ask が RUN_DIR・loop を同様に参照するのと
   # 同型の作法であり、loop_main 内でのみ呼び出す前提に依存する。
@@ -74,35 +96,44 @@ loop_main() {
       if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
     done
 
-    if [ "${REDRIVE}" -eq 1 ]; then
-      printf '%s plan\n' "$((k + 1))"; return
-    fi
-
     if [ "${k}" -eq 0 ]; then
       printf '1 plan\n'; return
     fi
-    [ "${k_verdict}" = PASS ] && { printf 'PASS\n'; return; }
+    if [ "${k_verdict}" = PASS ] && [ "${REDRIVE}" -eq 0 ]; then
+      printf 'PASS\n'; return
+    fi
 
     local n mode
     n=$((k + 1))
-    case "${k_verdict}" in
-      NEEDS_REVISION) mode=plan ;;
-      *)              mode=revise ;;
-    esac
+    if [ "${k_verdict}" = PASS ]; then
+      mode=plan
+    else
+      case "${k_verdict}" in
+        NEEDS_REVISION) mode=plan ;;
+        *)              mode=revise ;;
+      esac
+    fi
     printf '%s %s\n' "${n}" "${mode}"
   }
 
   trinity::log "loop 開始: ${BRANCH}"
 
-  # redrive マーカーがあれば修正要望を requirement.md へ追記して消費する
-  # （ask/a を requirement.md へ追記する既存作法に倣う）。以降の resume_point は
-  # この REDRIVE フラグで PASS 短絡を回避する。
+  # redrive マーカーは「再収束が未完」の耐久状態であり、消費して即削除しない
+  # （終端 PASS／failed／error に達したとき上記 trap が削除する）。
+  # requirement.md への取り込みは一度きり: マーカーの内容が既に requirement.md に
+  # 含まれていれば、再開時の重複追記とみなして追記しない。
   local REDRIVE=0
   if [ -f "${RUN_DIR}/redrive" ]; then
-    { printf '\n## 修正要望（re-drive）\n'; cat "${RUN_DIR}/redrive"; } >> "${RUN_DIR}/requirement.md"
-    rm -f "${RUN_DIR}/redrive"
     REDRIVE=1
-    trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する"
+    local redrive_text
+    redrive_text="$(cat "${RUN_DIR}/redrive")"
+    case "$(cat "${RUN_DIR}/requirement.md" 2>/dev/null || true)" in
+      *"${redrive_text}"*)
+        trinity::log "re-drive 信号は取り込み済み。requirement.md への再追記はしない" ;;
+      *)
+        { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_text}"; } >> "${RUN_DIR}/requirement.md"
+        trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する" ;;
+    esac
   fi
 
   local resume loop mode rc
@@ -116,14 +147,9 @@ loop_main() {
   [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
 
   # re-drive は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの予算を
-  # 相対的に与える（通常の crash-resume は従来どおり絶対上限のまま）。
-  # max_loop は二役を持つ: 通常時は絶対上限（TRINITY_MAX_LOOPS そのもの）、
-  # redrive 時は開始ループ相対の上限（loop + TRINITY_MAX_LOOPS - 1）。
-  # この予算相対化は redrive が terminal な Issue（プロセス消滅済み）への新規
-  # 収束試行であることを前提とする。round 途中で loop プロセスごとクラッシュし
-  # 再起動された場合、この拡張予算はディスクへ永続しないため失われる（既知の
-  # 限界。永続化は状態機械の追加が要るため別 Issue で扱う。本硬化では Orchestrator
-  # の pid 生存チェックで mid-flight の二重起動のみ防ぐ）。
+  # 相対的に与える（通常の crash-resume は絶対上限のまま）。redrive マーカーは終端まで
+  # 残る耐久状態なので、この相対予算は再起動のたびに読み直され、クラッシュ後の再開でも
+  # 失われない。
   local max_loop="${TRINITY_MAX_LOOPS}"
   [ "${REDRIVE}" -eq 1 ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
 
