@@ -46,8 +46,10 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | Evaluator | `${RUN_DIR}/eval-<n>.md`（先頭行 `VERDICT:`） | Planner（次ループ）・パイプライン |
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
 | Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
-| Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
-| `loop` | `${RUN_DIR}/pid`（自身の PID） | Orchestrator の再起動ガード（起動前に `kill -0` で生存確認） |
+| Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト） | パイプライン（`bin/trinity` の `loop` が `requirement.md` へ一度だけ追記し、再収束が終端に達するまで保持する耐久状態） |
+| `loop` | `${RUN_DIR}/redrive-start`（redrive 再収束の開始ループ番号） | `loop` 自身（クラッシュ再起動のたびに読み直し、予算 `TRINITY_MAX_LOOPS` の起点を固定する） |
+| `loop` | `${RUN_DIR}/redrive-appended`（requirement.md への redrive 追記が完了した印） | `loop` 自身（再起動のたびに読み直し、requirement.md への二重追記を防ぐ） |
+| `loop` | `${RUN_DIR}/.pid.lock/pid`（排他ロックを兼ねるディレクトリに記録した自身の PID） | `loop` 自身（起動時に mkdir で排他制御し、生存中の pid があれば二重起動として中止する） |
 
 ## Invariants
 

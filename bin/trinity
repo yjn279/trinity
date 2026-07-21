@@ -4,13 +4,15 @@
 # サブコマンド:
 #   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
 #       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
-#       起動時に RUN_DIR/pid の生存を確認し、生きていれば二重起動として中止する。生きて
-#       いなければ自身の PID を書いて継続する。確認が要るときは RUN_DIR/ask/q を書いて
-#       needs-input でブロックする。再起動時は RUN_DIR の既存成果物から中断点を判定して
-#       再開する。RUN_DIR/redrive があれば修正要望を requirement.md へ一度きり取り込み、
-#       最大 eval 番号 + 1 から plan モードで、その開始ループから TRINITY_MAX_LOOPS 回ぶんの
-#       予算で再収束する。redrive マーカーと pid は、再収束が新しい PASS に達するか
-#       failed／error の終端に達したときに削除する（それまでは再開のたびに読み直される
+#       起動時に RUN_DIR/.pid.lock を排他ロックとして確保し、その中の pid ファイルの生存
+#       （pid 再利用誤検知を避けるため argv の RUN_DIR 一致まで）を確認する。生存していれば
+#       二重起動として中止する。生きていなければロックを奪い自身の PID を書いて継続する
+#       （クラッシュ再開）。確認が要るときは RUN_DIR/ask/q を書いて needs-input でブロックする。
+#       再起動時は RUN_DIR の既存成果物から中断点を判定して再開する。RUN_DIR/redrive があれば
+#       修正要望を requirement.md へ一度きり取り込み、その開始ループを RUN_DIR/redrive-start に
+#       固定したうえで、そこから TRINITY_MAX_LOOPS 回ぶんの予算で再収束する（この起点はクラッシュ
+#       後の再開でも読み直され動かない）。redrive・redrive-start・ロックは、再収束が新しい PASS
+#       に達するか failed／error の終端に達したときに削除する（それまでは再開のたびに読み直される
 #       耐久状態として残る）。
 
 set -euo pipefail
@@ -36,23 +38,37 @@ loop_main() {
   # shellcheck source=lib/actors.sh
   . "${TRINITY_ROOT}/lib/actors.sh"
 
-  # 起動の原子性: 生存中の pid があれば同一 worktree への二重起動として中止する。
-  # 死んでいる・存在しない pid はこのプロセスのものへ更新して継続する（クラッシュ再開）。
-  local old_pid
-  if [ -f "${RUN_DIR}/pid" ] && old_pid="$(cat "${RUN_DIR}/pid")" && kill -0 "${old_pid}" 2>/dev/null; then
-    trinity::log "起動中止: pid ${old_pid} が生存中のため二重起動を防ぐ"
-    exit 1
+  # 起動の原子性: pid ファイルの read-then-write では二重起動の窓を閉じられないため、
+  # ファイルシステムレベルで atomic な mkdir を排他ロックに使う。ロック用ディレクトリ自身に
+  # pid を記録することで、排他制御と生存記録を単一の実体にまとめる。生存中の pid（かつ argv に
+  # 自分の RUN_DIR を含む——pid 再利用による誤検知を避ける）があれば同一 worktree への
+  # 二重起動として中止する。ロックが残っていても保持者が死んでいれば奪って継続する
+  # （クラッシュ再開）。
+  local lock_dir="${RUN_DIR}/.pid.lock"
+  if ! mkdir "${lock_dir}" 2>/dev/null; then
+    local old_pid=""
+    [ -f "${lock_dir}/pid" ] && old_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+    if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null \
+        && ps -o args= -p "${old_pid}" 2>/dev/null | grep -qF "${RUN_DIR}"; then
+      trinity::log "起動中止: pid ${old_pid} が生存中のため二重起動を防ぐ"
+      exit 1
+    fi
+    rm -rf "${lock_dir}"
+    mkdir "${lock_dir}" 2>/dev/null \
+      || { trinity::log "起動中止: ロック取得に失敗した（並行起動と競合）"; exit 1; }
   fi
-  printf '%s\n' "$$" > "${RUN_DIR}/pid"
+  printf '%s\n' "$$" > "${lock_dir}/pid"
 
-  # 終端（passed／failed／error）に達したときだけ redrive マーカーと pid を削除する。
-  # status を経由で判定するので、set -e によるどの終了経路（lib/actors.sh 内の
+  # 終端（passed／failed／error）に達したときだけ redrive・redrive-start・ロック（pid を含む）を
+  # 削除する。status を経由で判定するので、set -e によるどの終了経路（lib/actors.sh 内の
   # trinity::status error 経路を含む）でも EXIT トラップが同じ基準で回収する。
-  # 非終端のまま死ぬ本当のクラッシュでは trap 自体が走らず、両ファイルは残る
+  # 非終端のまま死ぬ本当のクラッシュでは trap 自体が走らず、これらは残る
   # （Orchestrator のクラッシュ再開判定はこの残存に依存する）。
   trap '
     case "$(cat "${RUN_DIR}/status" 2>/dev/null || true)" in
-      passed | failed | error) rm -f "${RUN_DIR}/redrive" "${RUN_DIR}/pid" ;;
+      passed | failed | error)
+        rm -f "${RUN_DIR}/redrive" "${RUN_DIR}/redrive-start" "${RUN_DIR}/redrive-appended"
+        rm -rf "${RUN_DIR}/.pid.lock" ;;
     esac
   ' EXIT
 
@@ -117,20 +133,19 @@ loop_main() {
 
   # redrive マーカーは「再収束が未完」の耐久状態であり、消費して即削除しない
   # （終端 PASS／failed／error に達したとき上記 trap が削除する）。
-  # requirement.md への取り込みは一度きり: マーカーの内容が既に requirement.md に
-  # 含まれていれば、再開時の重複追記とみなして追記しない。
+  # requirement.md への取り込みは一度きり: 印として RUN_DIR/redrive-appended を使う
+  # （テキストの部分一致だと無関係な既存記述への偶然の一致で新しい要望を取りこぼすため、
+  # 内容照合ではなく専用の印で判定する）。
   local REDRIVE=0
   if [ -f "${RUN_DIR}/redrive" ]; then
     REDRIVE=1
-    local redrive_text
-    redrive_text="$(cat "${RUN_DIR}/redrive")"
-    case "$(cat "${RUN_DIR}/requirement.md" 2>/dev/null || true)" in
-      *"${redrive_text}"*)
-        trinity::log "re-drive 信号は取り込み済み。requirement.md への再追記はしない" ;;
-      *)
-        { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_text}"; } >> "${RUN_DIR}/requirement.md"
-        trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する" ;;
-    esac
+    if [ -f "${RUN_DIR}/redrive-appended" ]; then
+      trinity::log "re-drive 信号は取り込み済み。requirement.md への再追記はしない"
+    else
+      { printf '\n## 修正要望（re-drive）\n'; cat "${RUN_DIR}/redrive"; } >> "${RUN_DIR}/requirement.md"
+      : > "${RUN_DIR}/redrive-appended"
+      trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する"
+    fi
   fi
 
   local resume loop mode rc
@@ -144,11 +159,20 @@ loop_main() {
   [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
 
   # re-drive は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの予算を
-  # 相対的に与える（通常の crash-resume は絶対上限のまま）。redrive マーカーは終端まで
-  # 残る耐久状態なので、この相対予算は再起動のたびに読み直され、クラッシュ後の再開でも
-  # 失われない。
-  local max_loop="${TRINITY_MAX_LOOPS}"
-  [ "${REDRIVE}" -eq 1 ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
+  # 相対的に与える（通常の crash-resume は絶対上限のまま）。この開始ループは
+  # RUN_DIR/redrive-start に固定し、以後の再起動では読み直すだけで動かさない
+  # （resume_point が返す loop は再起動のたびに進むため、そのつど基準にすると
+  # クラッシュを繰り返すたびに予算が際限なく延びてしまう）。
+  local max_loop="${TRINITY_MAX_LOOPS}" redrive_start
+  if [ "${REDRIVE}" -eq 1 ]; then
+    if [ -f "${RUN_DIR}/redrive-start" ]; then
+      redrive_start="$(cat "${RUN_DIR}/redrive-start")"
+    else
+      redrive_start="${loop}"
+      printf '%s\n' "${redrive_start}" > "${RUN_DIR}/redrive-start"
+    fi
+    max_loop=$((redrive_start + TRINITY_MAX_LOOPS - 1))
+  fi
 
   while [ "${loop}" -le "${max_loop}" ]; do
     if [ "${mode}" = plan ]; then
