@@ -38,6 +38,8 @@ Evaluator の独立性は、ファイルベースの通信によって構造的�
 | :-- | :-- | :-- |
 | `bin/trinity loop` | シェル（サブコマンド） | 1 Issue の `Plan → Generator → 道具 → Evaluator` 収束ループ。Orchestrator がハーネス追跡の背景タスクとして直接起動する |
 | `lib/actors.sh` | シェル | 各アクターを `claude -p` の子プロセスとして起動するステートレスな呼び出し層 |
+| `lib/git-shim/git` | PATH レベルの wrapper | git をロールごとの allowlist・deny-by-default で判定し、状態変更を worktree の外へ出させない |
+| `lib/guard.sh` | PreToolUse フック | Write/Edit（および NotebookEdit）の許容範囲をロールごとに判定する |
 
 agent 定義は `agents/` に、ハーネスは `bin/trinity`（単一の実行ファイル）と `lib/actors.sh` に、Orchestrator の手順は `commands/run.md` に置く。アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を指示として注入する。ランの成果物（`plan.md`・`tasks.tsv`・`eval-*.md`・`gen-*.md`・`review-*.md`・`status`・`trinity.log` 等）は対象プロジェクトの `.trinity/<session>/<slug>/` に出力され、`backlog.tsv` は `.trinity/<session>/` に置かれる。worktree は `git-flow` スキルが `.trinity/` の外に切り出す。Pull Request・後片付けといった git 運用も同様に `git-flow` スキルに委譲する。確定済みの仕様は `docs/requirements.md` に記す。
 
