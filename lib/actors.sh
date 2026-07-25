@@ -60,6 +60,43 @@ trinity::claude() {
       --settings "$(trinity::guard_settings)" )
 }
 
+# trinity::acquire_lock — RUN_DIR/.pid.lock を排他ロックとして確保し pid を書き込む。
+# ファイルシステムレベルで atomic な mkdir を排他ロックに使う（pid ファイルの read-then-write
+# では二重起動の窓を閉じられない）。ロック用ディレクトリ自身に pid を記録することで、排他制御と
+# 生存記録を単一の実体にまとめる。mkdir 成功から pid 書き込みまでの一瞬は pid ファイルが未着の
+# ロックが存在しうるため、他プロセスの mkdir 失敗時はその着弾を短く待ってから判定する（待っても
+# 現れなければ、pid 書き込み前にクラッシュした放棄ロックとみなす）。生存判定は kill -0 に加え、
+# argv が自分の RUN_DIR に対する `loop` 呼び出しであることまで確認する（pid 再利用による誤検知や、
+# ログを `tail -f` するだけの無関係なプロセスへの誤爆を避ける）。ps が失敗し argv を確認できない
+# ときは、kill -0 が生存を示している以上、安全側に倒して起動を中止する（fail-fast）。保持者が
+# 死んでいれば奪って継続する（クラッシュ再開）。奪う際は mv による rename(2) を唯一のゲートにし、
+# 続けて rm -rf・mkdir で作り直す。
+trinity::acquire_lock() {
+  local lock_dir="${RUN_DIR}/.pid.lock"
+  if ! mkdir "${lock_dir}" 2>/dev/null; then
+    local old_pid="" wait_i=0
+    while [ ! -f "${lock_dir}/pid" ] && [ "${wait_i}" -lt 10 ]; do
+      sleep 0.1
+      wait_i=$((wait_i + 1))
+    done
+    old_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+    if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+      local ps_out=""
+      ps_out="$(ps -o args= -p "${old_pid}" 2>/dev/null)" || true
+      if [ -z "${ps_out}" ] || printf '%s' "${ps_out}" | grep -qF "loop ${RUN_DIR}"; then
+        trinity::log "起動中止: pid ${old_pid} が生存中のため二重起動を防ぐ"
+        exit 1
+      fi
+    fi
+    if mv "${lock_dir}" "${lock_dir}.stale.$$" 2>/dev/null; then
+      rm -rf "${lock_dir}.stale.$$"
+    fi
+    mkdir "${lock_dir}" 2>/dev/null \
+      || { trinity::log "起動中止: ロック取得に失敗した（並行起動と競合）"; exit 1; }
+  fi
+  printf '%s\n' "$$" > "${lock_dir}/pid"
+}
+
 # trinity::verdict_of FILE — eval-*.md から VERDICT の値（PASS/NEEDS_REVISION/FAIL）を返す。
 trinity::verdict_of() {
   awk '/^VERDICT:/{print $2; exit}' "$1" 2>/dev/null

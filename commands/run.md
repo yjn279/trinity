@@ -35,7 +35,7 @@ slug<TAB>worktree<TAB>branch<TAB>title
 
 ### 3. Launch
 
-`backlog.tsv` の各行につき、`<RUN_DIR>/.pid.lock/pid` が生存していない（`kill -0` が失敗する、`ps` の argv に該当 RUN_DIR を含まない、またはファイル自体が無い）Issue のうち、`<RUN_DIR>/status` が無い（未起動）・非終端（`passed`／`failed`／`error` 以外、＝走行中にプロセスが死んだクラッシュ）・または `<RUN_DIR>/redrive` がある（修正要望の再収束）のいずれかに該当するものだけを起動する。`pid` が生存していれば走行中として手順4の監視に回し、`status` が終端かつ `redrive` も無ければ処理済みとしてスキップする。二重起動そのものは `trinity loop` 起動時の pid 生死ガードが機構として原子的に防ぐため、ここでの判定は正確な排他制御を担わなくてよい。起動は `trinity loop` を Bash ツールの `run_in_background` で背景タスクとして立ち上げ、出力を `${RUN_DIR}/pipeline.out` へ追記する。
+`backlog.tsv` の各行につき、`<RUN_DIR>/.pid.lock/pid` が生存していない（`kill -0` が失敗する、`ps` の argv に `loop <RUN_DIR>` を含まない、またはファイル自体が無い）Issue のうち、`<RUN_DIR>/status` が無い（未起動）・非終端（`passed`／`failed`／`error` 以外、＝走行中にプロセスが死んだクラッシュ）・または `<RUN_DIR>/redrive` がある（修正要望の再収束）のいずれかに該当するものだけを起動する。`pid` が生存していれば走行中として手順4の監視に回し、`status` が終端かつ `redrive` も無ければ処理済みとしてスキップする。`trinity loop` 起動時の pid 生死ガードは同一 Issue への重複起動を潰す最終防衛だが完全な排他制御ではないため、ここでの判定を粗くしてよい理由にはしない。起動は `trinity loop` を Bash ツールの `run_in_background` で背景タスクとして立ち上げ、出力を `${RUN_DIR}/pipeline.out` へ追記する。
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/trinity" loop "${RUN_DIR}" "${WORKTREE_DIR}" "${BRANCH}" >> "${RUN_DIR}/pipeline.out" 2>&1
