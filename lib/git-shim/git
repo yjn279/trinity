@@ -21,6 +21,13 @@ git_shim::deny() {
   exit 1
 }
 
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>（git 2.31+）は argv に一切現れず、
+# 下の -c / --config-env 検査を素通りしたまま同じ設定注入を成立させる。同じ理由でキーを問わず
+# 一律 deny する。
+if [ -n "${GIT_CONFIG_COUNT:-}" ]; then
+  git_shim::deny "は環境変数（GIT_CONFIG_COUNT）経由のgit設定注入を実行できない"
+fi
+
 sub=""
 declare -a rest=()
 declare -a args=("$@")
@@ -28,16 +35,13 @@ i=0
 while [ "$i" -lt "${#args[@]}" ]; do
   tok="${args[$i]}"
   case "$tok" in
-    -c | --config-env)
+    -c | --config-env | --config-env=*)
       # -c <key>=<value> / --config-env=<key>=<envvar> は本物 git への委譲後にそのプロセス内
       # だけで設定を一時上書きする。alias.* によるサブコマンド名の完全一致判定の迂回だけでなく、
       # core.pager・core.fsmonitor・core.sshCommand のようなシェル実行を伴う設定キーへの注入も、
       # allowlist 判定後に効いてしまう
       # （例: `-c core.fsmonitor='!cmd' status` は sub=status で許可された後にコマンドを実行する）。
       # どのアクターも一時上書きを正当に必要としないため、キーを問わず一律で deny する。
-      git_shim::deny "は -c / --config-env によるgit設定の一時上書きを実行できない"
-      ;;
-    --config-env=*)
       git_shim::deny "は -c / --config-env によるgit設定の一時上書きを実行できない"
       ;;
     -C | --git-dir | --work-tree | --namespace)
