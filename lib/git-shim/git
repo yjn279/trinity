@@ -7,11 +7,10 @@
 # 検査すれば文字列パーサの脆弱性クラスを構造的に消せる（詳細は plan.md 参照）。
 # TRINITY_ROLE の許否集合はここが単一の正であり、guard.sh・agents/*.md へ書き写さない。
 #
-# git 自身の別名（alias）機構は、サブコマンド名の完全一致判定だけでは迂回できる
-# （`git config alias.p '!git push'` → `git p` や `git -c alias.pp=push ... pp`）。
-# これを塞ぐため、状態変更禁止ロール（planner/evaluator）は「読み取り専用サブコマンドの
-# allowlist」（deny-by-default）へ倒し、alias 名を含む allowlist 外の語をすべて拒否する。
-# generator は広く git を要するため denylist を維持しつつ、alias 経由の迂回だけを個別に塞ぐ。
+# 全ロールとも「使ってよい git の組み込みサブコマンド名の allowlist」で判定し、一覧に無い
+# 語（別名を含む）はすべて既定で拒否する（deny-by-default）。git は同名の組み込みサブコマンド
+# を常に別名より優先するため（実機確認済み）、別名は allowlist に載り得ず一覧の内側でも
+# 発火しない。読み取り専用の集合は全ロール共通、変更系の集合は generator のみ加える。
 set -euo pipefail
 
 role="${TRINITY_ROLE:-}"
@@ -100,8 +99,7 @@ git_shim::is_denied_commit_flag() {
 }
 
 # git_shim::deny_if_commit_flags MESSAGE ARGS... — commit のトークン列に --amend/--no-verify
-# 相当が1つでもあれば MESSAGE で deny する。直接呼び出しと alias 展開の両方の commit 判定が
-# 使う共通経路。
+# 相当が1つでもあれば MESSAGE で deny する。
 git_shim::deny_if_commit_flags() {
   local message="$1" a
   shift
