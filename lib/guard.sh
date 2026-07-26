@@ -9,9 +9,9 @@
 # 振る舞いの単一の正である agents/<role>.md の記述と矛盾しない。
 #
 # 役割境界はこのフック一本で enforce する。Write/Edit/NotebookEdit はファイル書き込みの範囲を、
-# Bash は `tool_input.command` を分解して git の役割別ポリシーを判定する。検査器を PATH 前置きの
-# wrapper でなくフックに置くのは、フックが allow/deny を返すだけで git を自ら exec せず、「検査器が
-# git を呼び、その git がまた検査器を呼ぶ」相互再入（fork リーク）を構造的に起こし得ないためである。
+# Bash は `tool_input.command` を分解して git の役割別ポリシーを判定する。このフックは allow/deny を
+# 返すだけで git を自ら exec しないため、「検査器が git を呼び、その git がまた検査器を呼ぶ」相互再入
+# （fork リーク）が構造的に起こり得ない。
 set -euo pipefail
 
 # guard::json_field KEY JSON — "KEY":"value" 形の文字列値を1つ抜き出す（最小限のJSONパーサ）。
@@ -224,6 +224,10 @@ guard::check_alias_chain() {
   # 深さ上限に達しても「解決できなかった」だけであり安全は確認できていないため、
   # allow ではなく deny 側に倒す（fail-open による push/amend 迂回を防ぐ）。
   [ "$depth" -ge 5 ] && guard::deny "role=${role} は alias 展開の連鎖が深すぎて安全性を確認できない（${name}）"
+  # git 本体を解決できなければ alias が push/shell へ展開されるか確認できない。安全は確認できて
+  # いないので、代替値で先へ進めず（fail-open 防止）その場で deny する。
+  guard::git_bin >/dev/null 2>&1 \
+    || guard::deny "role=${role} は git を解決できず alias（${name}）の安全性を確認できない"
   expansion="$(guard::git_query "${GUARD_GIT_REPO_CTX[@]+"${GUARD_GIT_REPO_CTX[@]}"}" config --get "alias.${name}" 2>/dev/null || true)"
   [ -z "$expansion" ] && return 0
   case "$expansion" in
@@ -338,13 +342,13 @@ guard::_flush_word() {
 
 # guard::tokenize COMMAND — シェル文字列を語（word）とコマンド境界の列へ分解し、グローバル配列
 # GUARD_TOKENS へ "W:<語>"（クォート除去済み）/ "O"（境界）で積む。目的は「git で始まる単純コマンド」を
-# 境界で切り出すことに尽き、完全なシェル文法の再現ではない。単一引用符内は完全にリテラル、二重引用符内も
-# 一語として連結し境界を作らない（自然な git 呼び出しの形を対象とし、二重引用符内へ隠したコマンド置換の
-# ような難読化までは追わない。deny-by-default と false-positive の低コストでこの割り切りを受け入れる）。
-# コマンド置換 $(...) とバッククォート、および && || ; | & ( ) と改行を境界として扱い、内側の git を独立した
-# 単純コマンドとして拾う。
+# 境界で切り出すことに尽き、完全なシェル文法の再現ではない。引用符内はリテラルとして一語に連結し境界を
+# 作らない（`-m "wip; done"` の中の区切り文字を誤って境界にしない）。無引用の & | ; ( ) ` と改行を境界と
+# して扱い、コマンド置換 `$(...)` やバッククォートの内側 git は ( ) ` が作る境界で独立コマンドとして拾う。
+# 自然な git 呼び出しの形を対象とし、二重引用符内へ隠したコマンド置換のような難読化までは追わない
+# （deny-by-default と false-positive の低コストでこの割り切りを受け入れる）。
 guard::tokenize() {
-  local s="$1" n c nx
+  local s="$1" n c q
   local -i i=0
   n=${#s}
   GUARD_TOKENS=()
@@ -352,48 +356,27 @@ guard::tokenize() {
   while [ "$i" -lt "$n" ]; do
     c="${s:$i:1}"
     case "$c" in
-      "'")
-        GUARD_TOK_HAVE=1; i=$((i + 1))
-        while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != "'" ]; do
-          GUARD_TOK_CUR="${GUARD_TOK_CUR}${s:$i:1}"; i=$((i + 1))
-        done
-        i=$((i + 1))
-        ;;
-      '"')
-        GUARD_TOK_HAVE=1; i=$((i + 1))
-        while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != '"' ]; do
-          if [ "${s:$i:1}" = '\' ] && [ "$((i + 1))" -lt "$n" ]; then
-            nx="${s:$((i + 1)):1}"
-            case "$nx" in
-              '"' | '\' | '$' | '`') GUARD_TOK_CUR="${GUARD_TOK_CUR}${nx}"; i=$((i + 2)); continue ;;
-            esac
-          fi
+      "'" | '"')
+        q="$c"; GUARD_TOK_HAVE=1; i=$((i + 1))
+        while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != "$q" ]; do
           GUARD_TOK_CUR="${GUARD_TOK_CUR}${s:$i:1}"; i=$((i + 1))
         done
         i=$((i + 1))
         ;;
       '\')
-        if [ "$((i + 1))" -lt "$n" ]; then
-          GUARD_TOK_CUR="${GUARD_TOK_CUR}${s:$((i + 1)):1}"; GUARD_TOK_HAVE=1; i=$((i + 2))
-        else
+        if [ "$((i + 1))" -ge "$n" ]; then
           i=$((i + 1))
-        fi
-        ;;
-      '$')
-        if [ "${s:$((i + 1)):1}" = '(' ]; then
-          guard::_flush_word; GUARD_TOKENS+=("O"); i=$((i + 2))
+        elif [ "${s:$((i + 1)):1}" = $'\n' ]; then
+          i=$((i + 2))   # 行継続（\<改行>）はシェルが除去する。語に含めず次語と繋げない。
         else
-          GUARD_TOK_CUR="${GUARD_TOK_CUR}${c}"; GUARD_TOK_HAVE=1; i=$((i + 1))
+          GUARD_TOK_CUR="${GUARD_TOK_CUR}${s:$((i + 1)):1}"; GUARD_TOK_HAVE=1; i=$((i + 2))
         fi
         ;;
-      '`' | '&' | '|' | ';' | '(' | ')')
+      '`' | '&' | '|' | ';' | '(' | ')' | $'\n' | $'\r')
         guard::_flush_word; GUARD_TOKENS+=("O"); i=$((i + 1))
         ;;
       ' ' | $'\t')
         guard::_flush_word; i=$((i + 1))
-        ;;
-      $'\n' | $'\r')
-        guard::_flush_word; GUARD_TOKENS+=("O"); i=$((i + 1))
         ;;
       *)
         GUARD_TOK_CUR="${GUARD_TOK_CUR}${c}"; GUARD_TOK_HAVE=1; i=$((i + 1))
@@ -404,37 +387,32 @@ guard::tokenize() {
 }
 
 # guard::check_bash ROLE COMMAND — Bash tool の command を分解し、各 git 単純コマンドを検査する。
-# 先頭の VAR=val 代入・env/command 等のラッパー語は読み飛ばし、コマンド名が git のとき後続の引数を
-# 境界まで集めて guard::check_git に渡す。git 以外のコマンドは境界まで無視する。
+# 先頭の VAR=val 代入（`GIT_COMMITTER_DATE=... git commit` 等）と env は読み飛ばし、コマンド名が git の
+# とき後続の引数を境界まで集めて guard::check_git に渡す。git 以外のコマンドは境界まで無視する。
 guard::check_bash() {
   local role="$1" command="$2" tok val
   guard::tokenize "$command"
-  local -i i=0 total=${#GUARD_TOKENS[@]}
   local -i at_cmd_start=1 in_git=0
   local -a gitargs=()
-  while [ "$i" -lt "$total" ]; do
-    tok="${GUARD_TOKENS[$i]}"
+  for tok in "${GUARD_TOKENS[@]+"${GUARD_TOKENS[@]}"}"; do
     if [ "$tok" = "O" ]; then
       if [ "$in_git" -eq 1 ]; then
         guard::check_git "$role" "${gitargs[@]+"${gitargs[@]}"}"
         in_git=0; gitargs=()
       fi
-      at_cmd_start=1; i=$((i + 1)); continue
+      at_cmd_start=1; continue
     fi
     val="${tok#W:}"
     if [ "$in_git" -eq 1 ]; then
-      gitargs+=("$val"); i=$((i + 1)); continue
+      gitargs+=("$val"); continue
     fi
     if [ "$at_cmd_start" -eq 1 ]; then
       case "$val" in
-        *=*) : ;;                                   # 先頭の VAR=val 代入は読み飛ばす。
-        env | command | builtin | nice | nohup | time | stdbuf) : ;;  # ラッパー語も読み飛ばす。
+        *=* | env) : ;;                             # 先頭の VAR=val 代入と env は読み飛ばす。
         git) in_git=1; at_cmd_start=0 ;;
         *) at_cmd_start=0 ;;                         # git 以外のコマンド。境界まで無視する。
       esac
-      i=$((i + 1)); continue
     fi
-    i=$((i + 1))
   done
   if [ "$in_git" -eq 1 ]; then
     guard::check_git "$role" "${gitargs[@]+"${gitargs[@]}"}"

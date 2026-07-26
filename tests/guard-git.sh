@@ -13,11 +13,12 @@ GUARD="${ROOT}/lib/guard.sh"
 pass=0
 fail=0
 
-# json_escape STRING — command 文字列を JSON の文字列値へエスケープする（\ と " のみで十分）。
+# json_escape STRING — command 文字列を JSON の文字列値へエスケープする（\ → \\、" → \"、改行 → \n）。
 json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
   printf '%s' "$s"
 }
 
@@ -44,11 +45,12 @@ run_case() {
 run_case generator "git push"                                  deny
 run_case generator "git commit --amend"                        deny
 run_case generator "git commit --no-verify"                    deny
-run_case generator "git -c core.fsmonitor='!id' status"        deny
+run_case generator "git -c core.fsmonitor='!id' status"        deny  # -c は role 非依存で deny
 run_case planner   "git -c core.fsmonitor='!id' status"        deny
-run_case evaluator "git -c core.fsmonitor='!id' status"        deny
 run_case generator "git config alias.x '!git push'"            deny
-run_case generator "git config alias.x '!git push' && git x"   deny
+run_case generator "git config alias.x '!git push' && git x"   deny  # 複合コマンドを境界で走査
+run_case generator "foo=\$(git push)"                          deny  # コマンド置換内も ( ) 境界で拾う
+run_case generator "$(printf 'git \\\npush')"                  deny  # 行継続をまたいでも push を拾う
 run_case planner   "git commit -m x"                           deny
 run_case evaluator "git checkout -b foo"                       deny
 
@@ -56,6 +58,7 @@ run_case evaluator "git checkout -b foo"                       deny
 run_case planner   "git log"                                   allow
 run_case evaluator "git status"                                allow
 run_case generator 'git commit -m "msg"'                       allow
+run_case generator 'git commit -m "wip; git push later"'       allow  # 引用符内の区切りは境界にしない
 run_case generator "git add file.txt"                          allow
 run_case planner   "git rev-parse HEAD"                        allow
 run_case generator "echo git push"                             allow

@@ -39,7 +39,7 @@ trinity::agent_body() {
 # trinity::guard_settings — lib/guard.sh を PreToolUse フックとして注入する --settings JSON。
 # 役割ごとの許否は TRINITY_ROLE（env）で guard.sh 自身が分岐するため、JSON 自体は共通でよい。
 # matcher は Write/Edit/NotebookEdit（ファイル書き込みの範囲）と Bash（git の役割別ポリシー）を
-# 対象とする。git は guard.sh が command を分解して直接判定する（PATH を汚さず wrapper 再入も起きない）。
+# 対象とする。git は guard.sh が command を分解して直接判定する（PATH は一切いじらない）。
 trinity::guard_settings() {
   local escaped_root="${TRINITY_ROOT//\\/\\\\}"
   escaped_root="${escaped_root//\"/\\\"}"
