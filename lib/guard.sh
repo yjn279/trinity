@@ -9,9 +9,11 @@
 # 振る舞いの単一の正である agents/<role>.md の記述と矛盾しない。
 #
 # 役割境界はこのフック一本で enforce する。Write/Edit/NotebookEdit はファイル書き込みの範囲を、
-# Bash は `tool_input.command` を分解して git の役割別ポリシーを判定する。このフックは allow/deny を
-# 返すだけで git を自ら exec しないため、「検査器が git を呼び、その git がまた検査器を呼ぶ」相互再入
-# （fork リーク）が構造的に起こり得ない。
+# Bash は `tool_input.command` から git の役割別ポリシーを判定する。git は許可サブコマンドの
+# allowlist（deny-by-default）で判定し、状態を変える evasion（alias 追加・設定注入）は config 書き込みと
+# `-c` を deny することで閉じる。git を含む複合コマンド（演算子・コマンド置換・行継続）は、git 呼び出しを
+# 安全に切り出せないため deny し、単一の git コマンドへ分けさせる。このフックは allow/deny を返すだけで
+# git を自ら exec しないため、検査のために別の git を spawn する相互再入（fork リーク）が起こり得ない。
 set -euo pipefail
 
 # guard::json_field KEY JSON — "KEY":"value" 形の文字列値を1つ抜き出す（最小限のJSONパーサ）。
@@ -119,29 +121,11 @@ guard::check_write() {
 }
 
 # ── Bash の git 検査 ─────────────────────────────────────────────────────────
-# TRINITY_ROLE の許否集合はここが単一の正であり、agents/*.md へ書き写さない。
-# 状態変更禁止ロール（planner/evaluator）は「読み取り専用サブコマンドの allowlist」
-# （deny-by-default）へ倒し、alias 名を含む allowlist 外の語をすべて拒否する。
-# generator は広く git を要するため denylist を維持しつつ、alias 経由の迂回だけを個別に塞ぐ。
-
-# guard::git_bin — 検査に使う本物の git を、汚染されうる PATH に依存せず絶対パスで解決する。
-# 実体の git を優先し、xcrun 経由の /usr/bin/git スタブは最後に回す（環境隔離下でも確実に動く）。
-guard::git_bin() {
-  local d
-  for d in /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
-    [ -x "${d}/git" ] && { printf '%s' "${d}/git"; return 0; }
-  done
-  return 1
-}
-
-# guard::git_query ARGS... — 検査専用に本物の git を環境隔離して実行する。
-# env -i で PATH と GIT_* を落とし（PATH に何が積まれても検査器へ再入しない）、
-# HOME だけ残して対象リポジトリと利用者グローバルの alias を解決できる範囲に保つ。
-guard::git_query() {
-  local gitbin
-  gitbin="$(guard::git_bin)" || return 1
-  env -i PATH=/usr/bin HOME="${HOME:-}" "$gitbin" "$@"
-}
+# TRINITY_ROLE の許否集合はここが単一の正であり、agents/*.md へ書き写さない。すべてのロールを
+# allowlist（deny-by-default）で判定する。planner/evaluator は読み取り専用サブコマンド、generator は
+# それに worktree 内で状態を変えるサブコマンドを加える。allowlist 外の語（未知/将来のサブコマンド・
+# alias 名を含む）はすべて deny する。alias によるカスタム名は allowlist に無く、config 書き込みも
+# deny するため、runtime で alias を展開して追う必要はない。
 
 # guard::git_config_is_read ARGS... — git config 呼び出しが読み取り専用形（--get/--get-all/
 # --get-regexp/--get-urlmatch/--list/-l）かどうかを判定する。書き込み系フラグが含まれる場合や
@@ -159,19 +143,6 @@ guard::git_config_is_read() {
     esac
   done
   [ "$found_read" -eq 1 ]
-}
-
-# guard::git_strip_quotes TOKEN — 前後を囲む一重の引用符（"..." または '...'）を1組だけ剥がす。
-# alias 展開はスペース区切りの argv 列として素朴に分割するため、`commit "--amend"` のような
-# 引用符付きの値は分割後も引用符が残る。しかし本物 git 自身の alias 展開はこの引用符を剥がして
-# フラグとして解釈するため、剥がさずに比較すると `--amend` が字面一致せず判定を素通りする。
-guard::git_strip_quotes() {
-  local t="$1"
-  case "$t" in
-    \"*\") t="${t#\"}"; t="${t%\"}" ;;
-    \'*\') t="${t#\'}"; t="${t%\'}" ;;
-  esac
-  printf '%s' "$t"
 }
 
 # guard::git_is_denied_commit_flag TOKEN — commit のトークンが --amend/--no-verify 相当か判定する。
@@ -200,7 +171,7 @@ guard::git_is_denied_commit_flag() {
 }
 
 # guard::git_deny_if_commit_flags MESSAGE ARGS... — commit のトークン列に --amend/--no-verify
-# 相当が1つでもあれば MESSAGE で deny する。直接呼び出しと alias 展開の両方の commit 判定が使う共通経路。
+# 相当が1つでもあれば MESSAGE で deny する。
 guard::git_deny_if_commit_flags() {
   local message="$1" a
   shift
@@ -210,78 +181,24 @@ guard::git_deny_if_commit_flags() {
   return 0
 }
 
-# guard::check_alias_chain ROLE NAME DEPTH — 本物 git の既存 alias 定義（`config alias.<NAME>`）を
-# 解決し、shell alias（`!` 始まり）や push・commit --amend/--no-verify へ展開されるなら deny する。
-# alias が別の alias 名へ展開されるケースに備え再帰するが、深さ制限で無限ループを防ぐ。git は同名の
-# 組み込みサブコマンドを常に alias より優先するため、NAME が allowlist/組み込み名と衝突する場合は
-# そもそも alias 展開が使われず安全側に倒れる。alias は対象リポジトリの設定であり、呼び出し元の argv
-# から抽出した -C/--git-dir/--work-tree/--namespace（GUARD_GIT_REPO_CTX）を前置して解決する。
-# 再帰は同一プロセス内の関数呼び出しで完結する（フックは git を自ら exec せず子プロセスへ再入
-# しない）ため、深さ引数だけで 5 段制限を担保する。
-guard::check_alias_chain() {
-  local role="$1" name="$2" depth="${3:-0}" expansion first a
-  [ -z "$name" ] && return 0
-  # 深さ上限に達しても「解決できなかった」だけであり安全は確認できていないため、
-  # allow ではなく deny 側に倒す（fail-open による push/amend 迂回を防ぐ）。
-  [ "$depth" -ge 5 ] && guard::deny "role=${role} は alias 展開の連鎖が深すぎて安全性を確認できない（${name}）"
-  # git 本体を解決できなければ alias が push/shell へ展開されるか確認できない。安全は確認できて
-  # いないので、代替値で先へ進めず（fail-open 防止）その場で deny する。
-  guard::git_bin >/dev/null 2>&1 \
-    || guard::deny "role=${role} は git を解決できず alias（${name}）の安全性を確認できない"
-  expansion="$(guard::git_query "${GUARD_GIT_REPO_CTX[@]+"${GUARD_GIT_REPO_CTX[@]}"}" config --get "alias.${name}" 2>/dev/null || true)"
-  [ -z "$expansion" ] && return 0
-  case "$expansion" in
-    '!'*)
-      guard::deny "role=${role} はシェル実行を伴う git alias（${name} → ${expansion}）を実行できない"
-      ;;
-  esac
-  # alias 展開はスペース区切りの git 引数列として意図的に分割する。
-  # shellcheck disable=SC2206
-  local -a exp_args=($expansion)
-  first="$(guard::git_strip_quotes "${exp_args[0]:-}")"
-  case "$first" in
-    push)
-      guard::deny "role=${role} は push へ展開される git alias（${name} → ${expansion}）を実行できない"
-      ;;
-    commit)
-      local -a stripped_args=()
-      for a in "${exp_args[@]:1}"; do
-        stripped_args+=("$(guard::git_strip_quotes "$a")")
-      done
-      guard::git_deny_if_commit_flags \
-        "role=${role} は commit --amend/--no-verify へ展開される git alias（${name} → ${expansion}）を実行できない" \
-        "${stripped_args[@]+"${stripped_args[@]}"}"
-      ;;
-  esac
-  guard::check_alias_chain "$role" "$first" "$((depth + 1))"
-}
-
-# guard::check_git ROLE ARGS... — git の引数列（`git` の後ろ）を role 別の規約で判定する。
+# guard::check_git ROLE ARGS... — git の引数列（`git` の後ろ）を role 別の allowlist で判定する。
 # 先頭のオプションを読み飛ばしてサブコマンドを特定し、-c は全ロール一律で deny する
-# （core.fsmonitor/core.pager/core.sshCommand 注入対策）。repo_ctx は alias 解決へ引き渡す。
+# （core.fsmonitor/core.pager/core.sshCommand 注入対策）。-C/--git-dir 等は値ごと読み飛ばす。
 guard::check_git() {
   local role="$1"; shift
   local sub="" i=0 tok
   local -a args=("$@") rest=()
-  GUARD_GIT_REPO_CTX=()
   while [ "$i" -lt "${#args[@]}" ]; do
     tok="${args[$i]}"
     case "$tok" in
       -c)
         # -c <key>=<value> は本物 git への委譲後にそのプロセス内だけで設定を一時上書きし、
-        # alias.* によるサブコマンド名の完全一致判定の迂回や、core.pager・core.fsmonitor・
-        # core.sshCommand のようなシェル実行を伴う設定キーへの注入を許してしまう。
-        # どのアクターも -c による一時上書きを正当に必要としないため、キーを問わず一律で deny する。
+        # core.pager・core.fsmonitor・core.sshCommand のようなシェル実行を伴う設定キーへの注入を
+        # 許してしまう。どのアクターも正当に必要としないため、キーを問わず一律で deny する。
         guard::deny "role=${role} は -c によるgit設定の一時上書きを実行できない"
         ;;
       -C | --git-dir | --work-tree | --namespace)
-        GUARD_GIT_REPO_CTX+=("$tok" "${args[$((i + 1))]:-}")
-        i=$((i + 2))
-        ;;
-      --git-dir=* | --work-tree=* | --namespace=*)
-        GUARD_GIT_REPO_CTX+=("$tok")
-        i=$((i + 1))
-        ;;
+        i=$((i + 2)) ;;   # リポジトリ指定フラグは値ごと読み飛ばす。
       -*) i=$((i + 1)) ;;
       *)
         sub="$tok"
@@ -299,8 +216,7 @@ guard::check_git() {
             guard::deny "role=${role} は git config の書き込み操作を実行できない"
           ;;
         "" | log | show | diff | status | rev-parse | blame | cat-file | ls-files | ls-tree | for-each-ref | rev-list | describe | shortlog | show-ref | name-rev | grep | var | help | version)
-          : # 読み取り専用サブコマンドの allowlist。ここに無い語（alias 名・両用コマンド・
-            # 未知/将来のサブコマンドを含む）はすべて deny-by-default で拒否する。
+          : # 読み取り専用サブコマンドの allowlist。
           ;;
         *)
           guard::deny "role=${role} は読み取り専用の git サブコマンド以外（${sub}）を実行できない"
@@ -321,10 +237,14 @@ guard::check_git() {
           guard::git_config_is_read "${rest[@]+"${rest[@]}"}" ||
             guard::deny "role=${role} は git config の書き込み操作を実行できない（alias 定義を含む）"
           ;;
+        "" | log | show | diff | status | rev-parse | blame | cat-file | ls-files | ls-tree | for-each-ref | rev-list | describe | shortlog | show-ref | name-rev | grep | var | help | version | \
+        add | checkout | switch | restore | reset | revert | cherry-pick | merge | rebase | stash | mv | rm | clean | apply | branch | tag | notes)
+          : # 上記に worktree 内で状態を変えるサブコマンドを加えた allowlist（push・network は除く）。
+          ;;
+        *)
+          guard::deny "role=${role} は許可された git サブコマンド以外（${sub}）を実行できない"
+          ;;
       esac
-      # サブコマンド名が本物 git 側に既存の alias として定義されていないか解決し、
-      # push・shell alias・commit --amend/--no-verify への展開を deny する。
-      guard::check_alias_chain "$role" "$sub" 0
       ;;
     *)
       guard::deny "role=${role} は未知のロールのため git を実行できない"
@@ -332,34 +252,22 @@ guard::check_git() {
   esac
 }
 
-# guard::_flush_word — 収集中の語があれば GUARD_TOKENS へ確定する（guard::tokenize 専用）。
-guard::_flush_word() {
-  if [ "${GUARD_TOK_HAVE}" -eq 1 ]; then
-    GUARD_TOKENS+=("W:${GUARD_TOK_CUR}")
-    GUARD_TOK_CUR=""; GUARD_TOK_HAVE=0
-  fi
-}
-
-# guard::tokenize COMMAND — シェル文字列を語（word）とコマンド境界の列へ分解し、グローバル配列
-# GUARD_TOKENS へ "W:<語>"（クォート除去済み）/ "O"（境界）で積む。目的は「git で始まる単純コマンド」を
-# 境界で切り出すことに尽き、完全なシェル文法の再現ではない。引用符内はリテラルとして一語に連結し境界を
-# 作らない（`-m "wip; done"` の中の区切り文字を誤って境界にしない）。無引用の & | ; ( ) ` と改行を境界と
-# して扱い、コマンド置換 `$(...)` やバッククォートの内側 git は ( ) ` が作る境界で独立コマンドとして拾う。
-# 自然な git 呼び出しの形を対象とし、二重引用符内へ隠したコマンド置換のような難読化までは追わない
-# （deny-by-default と false-positive の低コストでこの割り切りを受け入れる）。
-guard::tokenize() {
-  local s="$1" n c q
+# guard::scan COMMAND — command を引用符を除いた語列 GUARD_WORDS へ分解し、無引用の複合演算子
+# （& | ; ( ) ` と $( と \<改行>）を見たら GUARD_HAS_OP=1 にする。完全なシェル文法の再現ではなく、
+# 「単純コマンドの語を取り出す」ことと「複合コマンドを検知する」ことだけを担う。引用符内はリテラルとして
+# 一語に連結し、内部の区切りや演算子は境界にしない（`-m "wip; done"` の中の ; を演算子にしない）。
+guard::scan() {
+  local s="$1" n c q cur="" have=0
   local -i i=0
   n=${#s}
-  GUARD_TOKENS=()
-  GUARD_TOK_CUR=""; GUARD_TOK_HAVE=0
+  GUARD_WORDS=(); GUARD_HAS_OP=0
   while [ "$i" -lt "$n" ]; do
     c="${s:$i:1}"
     case "$c" in
       "'" | '"')
-        q="$c"; GUARD_TOK_HAVE=1; i=$((i + 1))
+        q="$c"; have=1; i=$((i + 1))
         while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != "$q" ]; do
-          GUARD_TOK_CUR="${GUARD_TOK_CUR}${s:$i:1}"; i=$((i + 1))
+          cur="${cur}${s:$i:1}"; i=$((i + 1))
         done
         i=$((i + 1))
         ;;
@@ -367,56 +275,54 @@ guard::tokenize() {
         if [ "$((i + 1))" -ge "$n" ]; then
           i=$((i + 1))
         elif [ "${s:$((i + 1)):1}" = $'\n' ]; then
-          i=$((i + 2))   # 行継続（\<改行>）はシェルが除去する。語に含めず次語と繋げない。
+          GUARD_HAS_OP=1; i=$((i + 2))   # 行継続（\<改行>）。演算子扱いで複合として弾く。
         else
-          GUARD_TOK_CUR="${GUARD_TOK_CUR}${s:$((i + 1)):1}"; GUARD_TOK_HAVE=1; i=$((i + 2))
+          cur="${cur}${s:$((i + 1)):1}"; have=1; i=$((i + 2))
         fi
         ;;
-      '`' | '&' | '|' | ';' | '(' | ')' | $'\n' | $'\r')
-        guard::_flush_word; GUARD_TOKENS+=("O"); i=$((i + 1))
+      '&' | '|' | ';' | '(' | ')' | '`')
+        GUARD_HAS_OP=1
+        [ "$have" -eq 1 ] && { GUARD_WORDS+=("$cur"); cur=""; have=0; }
+        i=$((i + 1))
         ;;
-      ' ' | $'\t')
-        guard::_flush_word; i=$((i + 1))
+      ' ' | $'\t' | $'\n' | $'\r')
+        [ "$have" -eq 1 ] && { GUARD_WORDS+=("$cur"); cur=""; have=0; }
+        i=$((i + 1))
         ;;
       *)
-        GUARD_TOK_CUR="${GUARD_TOK_CUR}${c}"; GUARD_TOK_HAVE=1; i=$((i + 1))
+        cur="${cur}${c}"; have=1; i=$((i + 1))
         ;;
     esac
   done
-  guard::_flush_word
+  [ "$have" -eq 1 ] && GUARD_WORDS+=("$cur")
+  return 0   # 末尾の [ ] && ... が have=0 のとき 1 を返し set -e を誤爆させないよう明示する。
 }
 
-# guard::check_bash ROLE COMMAND — Bash tool の command を分解し、各 git 単純コマンドを検査する。
-# 先頭の VAR=val 代入（`GIT_COMMITTER_DATE=... git commit` 等）と env は読み飛ばし、コマンド名が git の
-# とき後続の引数を境界まで集めて guard::check_git に渡す。git 以外のコマンドは境界まで無視する。
+# guard::check_bash ROLE COMMAND — command を分解し git の役割別ポリシーを適用する。
+# 先頭の VAR=val 代入と env を読み飛ばして実効コマンドを見る。それが git なら、複合コマンドは
+# 安全に切り出せないため deny し、単純なら引数を check_git へ渡す。実効コマンドが git でなくても
+# 語のどこかに git があれば（複合の後半・`xargs git push` 等）安全に判定できないため deny する。
 guard::check_bash() {
-  local role="$1" command="$2" tok val
-  guard::tokenize "$command"
-  local -i at_cmd_start=1 in_git=0
-  local -a gitargs=()
-  for tok in "${GUARD_TOKENS[@]+"${GUARD_TOKENS[@]}"}"; do
-    if [ "$tok" = "O" ]; then
-      if [ "$in_git" -eq 1 ]; then
-        guard::check_git "$role" "${gitargs[@]+"${gitargs[@]}"}"
-        in_git=0; gitargs=()
-      fi
-      at_cmd_start=1; continue
-    fi
-    val="${tok#W:}"
-    if [ "$in_git" -eq 1 ]; then
-      gitargs+=("$val"); continue
-    fi
-    if [ "$at_cmd_start" -eq 1 ]; then
-      case "$val" in
-        *=* | env) : ;;                             # 先頭の VAR=val 代入と env は読み飛ばす。
-        git) in_git=1; at_cmd_start=0 ;;
-        *) at_cmd_start=0 ;;                         # git 以外のコマンド。境界まで無視する。
-      esac
-    fi
+  local role="$1" command="$2" w
+  guard::scan "$command"
+  local -i j=0
+  while [ "$j" -lt "${#GUARD_WORDS[@]}" ]; do
+    case "${GUARD_WORDS[$j]:-}" in
+      *=* | env) j=$((j + 1)) ;;   # 先頭の VAR=val 代入と env は読み飛ばす。
+      *) break ;;
+    esac
   done
-  if [ "$in_git" -eq 1 ]; then
-    guard::check_git "$role" "${gitargs[@]+"${gitargs[@]}"}"
+  if [ "${GUARD_WORDS[$j]:-}" = "git" ]; then
+    [ "$GUARD_HAS_OP" -eq 1 ] &&
+      guard::deny "role=${role} は git を含む複合コマンドを実行できない（単一の git コマンドに分けて実行する）"
+    guard::check_git "$role" "${GUARD_WORDS[@]:$((j + 1))}"
+    return 0
   fi
+  for w in "${GUARD_WORDS[@]+"${GUARD_WORDS[@]}"}"; do
+    [ "$w" = "git" ] &&
+      guard::deny "role=${role} は git を安全に判定できない形（複合・埋め込み）で実行できない"
+  done
+  return 0
 }
 
 main() {

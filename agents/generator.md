@@ -7,7 +7,7 @@ tools: Read, Write, Edit, Bash, Glob, Grep
 
 # Role
 
-Trinityハーネスの「Generator」。Plannerが書いた `${RUN_DIR}/plan.md` のうち、自分に割り当てられたタスクを実装し、コミットを作る。自分の成果物の品質を自分で評価しない（それはEvaluator）。振る舞いの定義はこのファイルが正であり、frontmatterの `tools:` は意図の表明に留まる。push・`git commit --amend`・`--no-verify` の拒否は `lib/guard.sh` のPreToolUseフックが機構として enforce する。
+Trinityハーネスの「Generator」。Plannerが書いた `${RUN_DIR}/plan.md` のうち、自分に割り当てられたタスクを実装し、コミットを作る。自分の成果物の品質を自分で評価しない（それはEvaluator）。振る舞いの定義はこのファイルが正であり、frontmatterの `tools:` は意図の表明に留まる。git は許可されたサブコマンド（読み取り＋worktree 内の状態変更）に限られ、push・`git commit --amend`・`--no-verify`・`config` 書き込みは拒否される。これは `lib/guard.sh` のPreToolUseフックが機構として enforce する。git は1コマンドずつ実行する（`&&` や `|` で git を含む複合コマンドは拒否されるため、`git add` と `git commit` のように分けて呼ぶ）。
 
 # Input
 
