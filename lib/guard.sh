@@ -8,11 +8,10 @@
 # 判断基準そのもの（誰が何を拒否されるか）は plan.md の役割プロファイルを機構化したものであり、
 # 振る舞いの単一の正である agents/<role>.md の記述と矛盾しない。
 #
-# 役割境界はこのフック一本（単層）で enforce する。Write/Edit/NotebookEdit はファイル書き込みの
-# 範囲を、Bash は `tool_input.command` を分解して git の役割別ポリシーを判定する。git 検査は
-# かつて PATH 前置きした wrapper（lib/git-shim/git）が担っていたが、「wrapper が自ら git を
-# 呼ぶ」構造が相互再入で fork リークを起こしたため廃した。フックは allow/deny を返すだけで git を
-# 自ら exec しないため、その構造クラスのバグは原理的に起きない（Issue #115）。
+# 役割境界はこのフック一本で enforce する。Write/Edit/NotebookEdit はファイル書き込みの範囲を、
+# Bash は `tool_input.command` を分解して git の役割別ポリシーを判定する。検査器を PATH 前置きの
+# wrapper でなくフックに置くのは、フックが allow/deny を返すだけで git を自ら exec せず、「検査器が
+# git を呼び、その git がまた検査器を呼ぶ」相互再入（fork リーク）を構造的に起こし得ないためである。
 set -euo pipefail
 
 # guard::json_field KEY JSON — "KEY":"value" 形の文字列値を1つ抜き出す（最小限のJSONパーサ）。
@@ -136,8 +135,8 @@ guard::git_bin() {
 }
 
 # guard::git_query ARGS... — 検査専用に本物の git を環境隔離して実行する。
-# env -i で PATH と GIT_* を落とし（PATH に何が積まれても wrapper へ再入しない）、
-# HOME だけ残して対象リポジトリの alias 解決を旧 shim と同じ範囲に保つ。
+# env -i で PATH と GIT_* を落とし（PATH に何が積まれても検査器へ再入しない）、
+# HOME だけ残して対象リポジトリと利用者グローバルの alias を解決できる範囲に保つ。
 guard::git_query() {
   local gitbin
   gitbin="$(guard::git_bin)" || return 1
@@ -217,8 +216,8 @@ guard::git_deny_if_commit_flags() {
 # 組み込みサブコマンドを常に alias より優先するため、NAME が allowlist/組み込み名と衝突する場合は
 # そもそも alias 展開が使われず安全側に倒れる。alias は対象リポジトリの設定であり、呼び出し元の argv
 # から抽出した -C/--git-dir/--work-tree/--namespace（GUARD_GIT_REPO_CTX）を前置して解決する。
-# 再帰は同一プロセス内の関数呼び出しで完結し（wrapper 廃止で子プロセスへの再入は起きない）、
-# 深さ引数だけで 5 段制限を担保する。
+# 再帰は同一プロセス内の関数呼び出しで完結する（フックは git を自ら exec せず子プロセスへ再入
+# しない）ため、深さ引数だけで 5 段制限を担保する。
 guard::check_alias_chain() {
   local role="$1" name="$2" depth="${3:-0}" expansion first a
   [ -z "$name" ] && return 0
@@ -253,7 +252,7 @@ guard::check_alias_chain() {
   guard::check_alias_chain "$role" "$first" "$((depth + 1))"
 }
 
-# guard::check_git ROLE ARGS... — git の引数列（`git` の後ろ）を旧 shim と同じ規約で判定する。
+# guard::check_git ROLE ARGS... — git の引数列（`git` の後ろ）を role 別の規約で判定する。
 # 先頭のオプションを読み飛ばしてサブコマンドを特定し、-c は全ロール一律で deny する
 # （core.fsmonitor/core.pager/core.sshCommand 注入対策）。repo_ctx は alias 解決へ引き渡す。
 guard::check_git() {

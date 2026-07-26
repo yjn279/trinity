@@ -31,7 +31,7 @@ Trinity の開発では以下のスキルを依存として用いる。仕様・
 | Generator | sonnet | 読み書き可 | 割り当てタスクを worktree 内で実装しコミットする（既存コードが要件を満たし加えるべき差分が無ければ、コミットせず理由をレポートに残す） |
 | Evaluator | sonnet | 読み取り専用 | コミットを4軸で独立評価し3値判定を書く |
 
-frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。この境界は二層の機構で enforce する。git は PATH レベルの shim `lib/git-shim/git` が exec 時点の argv で判定し（Planner・Evaluator は読み取り専用サブコマンドの allowlist、Generator は push・commit --amend/--no-verify の denylist）、Write/Edit（および NotebookEdit）は `lib/guard.sh` の PreToolUse フックが判定する。両方とも `trinity::claude` が per-actor に注入し、frontmatter の `tools:` はあくまで意図表現である。
+frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。この境界は `lib/guard.sh` の PreToolUse フック一本（単層）で enforce する。Bash tool の `command` を分解して git を role 別に判定し（Planner・Evaluator は読み取り専用サブコマンドの allowlist、Generator は push・commit --amend/--no-verify の denylist）、Write/Edit（および NotebookEdit）は書き込み範囲を判定する。`trinity::claude` が per-actor に注入し、frontmatter の `tools:` はあくまで意図表現である。
 
 機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。道具の変更が `requirement.md` と食い違うときの判断は `agents/evaluator.md` の Tool Deviation を正とする。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップし、中断点から再開する。
 
@@ -57,7 +57,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | :-- | :-- |
 | Orchestrator はコードに触れない | コードの読み書きは必ず Generator に委譲する。 |
 | アクターは `claude -p` 経由 | Planner・Generator・Evaluator は `lib/actors.sh` の関数が `claude -p` の子プロセスとして起動する。アクターの振る舞いの単一の正は `agents/<role>.md`。 |
-| 権限は機構で enforce | 役割境界は二層で enforce する。git は PATH レベルの shim `lib/git-shim/git` が exec 時点の argv で判定し、Planner・Evaluator は読み取り専用サブコマンドの allowlist（deny-by-default）へ、Generator は push・commit --amend/--no-verify の denylist へ倒す。Write/Edit（および NotebookEdit）の許容範囲は `lib/guard.sh` の PreToolUse フックが判定する。`trinity::claude` が両方を per-actor に注入する。frontmatter の `tools:` は意図表現に留まり、同梱 `settings.json` はスキーマ宣言のみのまま変更しない。 |
+| 権限は機構で enforce | 役割境界は `lib/guard.sh` の PreToolUse フック一本（単層）で enforce する。Bash tool の `command` を分解して git を判定し、Planner・Evaluator は読み取り専用サブコマンドの allowlist（deny-by-default）へ、Generator は push・commit --amend/--no-verify の denylist へ倒す。Write/Edit（および NotebookEdit）の許容範囲も同じフックが判定する。`trinity::claude` が per-actor に注入する。frontmatter の `tools:` は意図表現に留まり、同梱 `settings.json` はスキーマ宣言のみのまま変更しない。 |
 | worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}" <cmd>` で操作し、 `cd` で代替しない。ユーザーのチェックアウトには触れない。 |
 | 引用は worktree 相対 | `plan.md` ・ `eval-<n>.md` 内の `path:line` は `WORKTREE_DIR` 起点の相対パスで書く。 |
 | 成果物の置き場所 | ラン成果物は対象プロジェクト側の `.trinity/<session>/<slug>/` に、`backlog.tsv` は `.trinity/<session>/` に出る。worktree は `.trinity/` の外に出る（配置規約は git-flow スキルに従う）。このリポジトリではない。 |
