@@ -26,18 +26,16 @@ trinity::log() {
 # 取りうる値: planning generating reviewing evaluating needs-input needs-revision revising passed failed error
 # passed/failed/error のみ終端。failed はループ上限到達を表し、FAIL 判定（継続）は revising を使う。
 # 終端に至ったときは RUN_DIR/pid を消し、「pid の有無」が走行中/終端済みの信号になるようにする。
-# passed/failed（再収束の完了）では RUN_DIR/redrive も同時に消す。redrive を先に、pid を後に消す
-# 順序を守ることで、この間にクラッシュしても「pid 生存だが死んでいる」というクラッシュ再開の
-# 観測にしかならず、resume_point の PASS 短絡が正しく効く。error では redrive を残し、
-# 未完の再収束として続きから拾えるようにする。
+# passed/failed（再収束の完了）では RUN_DIR/redrive と redrive.consumed も同時に消す。
+# redrive を先に、pid を後に消す順序を守ることで、この間にクラッシュしても「pid 生存だが
+# 死んでいる」というクラッシュ再開の観測にしかならず、resume_point の PASS 短絡が正しく効く。
+# error では redrive を残し、未完の再収束として続きから拾えるようにする。
 trinity::status() {
   printf '%s\n' "$1" > "${RUN_DIR}/status"
   trinity::log "status -> $1"
   case "$1" in
-    passed | failed) rm -f "${RUN_DIR}/redrive" ;;
-  esac
-  case "$1" in
-    passed | failed | error) rm -f "${RUN_DIR}/pid" ;;
+    passed | failed) rm -f "${RUN_DIR}/redrive" "${RUN_DIR}/redrive.consumed" "${RUN_DIR}/pid" ;;
+    error)           rm -f "${RUN_DIR}/pid" ;;
   esac
 }
 

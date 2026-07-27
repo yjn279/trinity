@@ -37,20 +37,26 @@ loop_main() {
   : "${TRINITY_MAX_LOOPS:=5}"
 
   # pid を原子的に主張する（O_EXCL）。既存かつ生存していれば多重起動として何もせず終わる。
-  # 死んでいれば前回のクラッシュ跡（stale）として引き継ぎ、続きから再開する。
-  if ! ( set -o noclobber; printf '%s\n' "$$" > "${RUN_DIR}/pid" ) 2>/dev/null; then
+  # 死んでいれば前回のクラッシュ跡（stale）として削除し、同じ O_EXCL で再主張を試みる。
+  # 再主張が失敗したら他プロセスが同時に引き継いだということなので、自分は退く。
+  # 書き込み自体が失敗した（ディスク・権限の異常）場合は主張の競合と区別し、握りつぶさず失敗させる。
+  loop::claim_pid() {
+    ( set -o noclobber; printf '%s\n' "$$" > "${RUN_DIR}/pid" ) 2>/dev/null
+  }
+  if ! loop::claim_pid; then
+    [ -e "${RUN_DIR}/pid" ] || { trinity::log "pid ファイルの作成に失敗した"; exit 1; }
     local existing_pid
-    existing_pid="$(cat "${RUN_DIR}/pid" 2>/dev/null || true)"
+    IFS= read -r existing_pid < "${RUN_DIR}/pid" 2>/dev/null || existing_pid=""
     if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
       trinity::log "既に実行中（pid ${existing_pid}）。何もせず終了する。"
       exit 0
     fi
-    trinity::log "pid ${existing_pid} は死んでいる（stale）。引き継いで再開する。"
-    # 一時ファイルへ書いてから同一ファイルシステム内で mv することで、他プロセスが
-    # 書きかけの内容を読む窓を作らずに置き換える。
-    local tmp_pid="${RUN_DIR}/pid.$$.tmp"
-    printf '%s\n' "$$" > "${tmp_pid}"
-    mv -f "${tmp_pid}" "${RUN_DIR}/pid"
+    trinity::log "pid ${existing_pid} は死んでいる（stale）。引き継ぎを試みる。"
+    rm -f "${RUN_DIR}/pid"
+    if ! loop::claim_pid; then
+      trinity::log "他プロセスが同時に引き継いだ。何もせず終了する。"
+      exit 0
+    fi
   fi
 
   # 設計分岐の確認: plan.md の `## 要確認の論点` を ask/q に出し、回答（ask/a）を待つ。
@@ -71,8 +77,8 @@ loop_main() {
   # RUN_DIR の既存成果物から再開ループ番号とモードを返す。
   # 出力形式: "<n> <mode>"（例: "2 plan"）。PASS 済みのときは "PASS" のみ。
   # 各段は自己スキップするため入口判定は不要。
-  # redrive マーカーが残っている（＝再収束が未完）ときは PASS 短絡を行わず、
-  # 最大 eval 番号 + 1 を常に plan モードで返す（修正要望による再収束）。
+  # redrive.consumed が残っている（＝取り込み済みだが再収束が未完）ときは PASS 短絡を
+  # 行わず、最大 eval 番号 + 1 を常に plan モードで返す（修正要望による再収束）。
   loop::resume_point() {
     local k=0 k_verdict="" num="" verdict="" f
     for f in "${RUN_DIR}"/eval-*.md; do
@@ -88,7 +94,7 @@ loop_main() {
       if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
     done
 
-    if [ -f "${RUN_DIR}/redrive" ]; then
+    if [ -f "${RUN_DIR}/redrive.consumed" ]; then
       printf '%s plan\n' "$((k + 1))"; return
     fi
 
@@ -108,25 +114,15 @@ loop_main() {
 
   trinity::log "loop 開始: ${BRANCH}"
 
-  # redrive マーカーがあれば修正要望を requirement.md へ取り込む。マーカー自体は
-  # 消さない。再収束が完了する（新しい PASS または終端 failed に達する）までの
-  # 耐久状態として残し、途中でクラッシュして再起動しても未完のまま続きから拾える
-  # ようにする。取り込み済みかどうかは新しい印を持たず、requirement.md 末尾の
-  # 直近の「## 修正要望（re-drive）」節の本文と redrive の内容を比較して判断する。
-  # 内容が異なれば（初回、または内容を変えた再度の要望なら）新しい節として追記する。
+  # redrive マーカーがあれば修正要望を requirement.md へ取り込み、redrive.consumed へ
+  # 改名する。rm ではなく mv なので、再収束が完了する（新しい PASS または終端 failed に
+  # 達する）までマーカー自体（名前を変えただけ）が耐久状態として残り、途中でクラッシュ
+  # して再起動しても未完のまま続きから拾える。改名済みなら redrive は存在しないため、
+  # 再起動後にこのブロックへ再度入っても取り込みは走らない（二重取り込みなし）。
   if [ -f "${RUN_DIR}/redrive" ]; then
-    local redrive_body last_section
-    redrive_body="$(cat "${RUN_DIR}/redrive")"
-    last_section="$(awk '
-      /^## 修正要望（re-drive）$/ { buf=""; capturing=1; next }
-      capturing && /^## / { capturing=0 }
-      capturing { buf = buf $0 ORS }
-      END { printf "%s", buf }
-    ' "${RUN_DIR}/requirement.md")"
-    if [ "${redrive_body}" != "${last_section}" ]; then
-      { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_body}"; } >> "${RUN_DIR}/requirement.md"
-      trinity::log "re-drive 信号を検出した。requirement.md に取り込み、最大 eval 番号 + 1 から plan で再収束する"
-    fi
+    { printf '\n## 修正要望（re-drive）\n'; cat "${RUN_DIR}/redrive"; } >> "${RUN_DIR}/requirement.md"
+    mv "${RUN_DIR}/redrive" "${RUN_DIR}/redrive.consumed"
+    trinity::log "re-drive 信号を検出した。requirement.md に取り込み、最大 eval 番号 + 1 から plan で再収束する"
   fi
 
   local resume loop mode rc
@@ -140,11 +136,11 @@ loop_main() {
   [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
 
   # re-drive は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの予算を
-  # 相対的に与える（通常の crash-resume は従来どおり絶対上限のまま）。redrive マーカーは
+  # 相対的に与える（通常の crash-resume は従来どおり絶対上限のまま）。redrive.consumed は
   # 再収束が完了するまで残るため、この判定は再起動のたびにディスクから読み直され、
   # 拡張予算はクラッシュ後の再開でも失われない。
   local max_loop="${TRINITY_MAX_LOOPS}"
-  [ -f "${RUN_DIR}/redrive" ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
+  [ -f "${RUN_DIR}/redrive.consumed" ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
 
   while [ "${loop}" -le "${max_loop}" ]; do
     if [ "${mode}" = plan ]; then
