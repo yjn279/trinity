@@ -43,8 +43,11 @@ loop_main() {
   loop::claim_pid() {
     ( set -o noclobber; printf '%s\n' "$$" > "${RUN_DIR}/pid" ) 2>/dev/null
   }
-  if ! loop::claim_pid; then
+  loop::assert_pid_written() {
     [ -e "${RUN_DIR}/pid" ] || { trinity::log "pid ファイルの作成に失敗した"; exit 1; }
+  }
+  if ! loop::claim_pid; then
+    loop::assert_pid_written
     local existing_pid
     IFS= read -r existing_pid < "${RUN_DIR}/pid" 2>/dev/null || existing_pid=""
     if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
@@ -54,6 +57,7 @@ loop_main() {
     trinity::log "pid ${existing_pid} は死んでいる（stale）。引き継ぎを試みる。"
     rm -f "${RUN_DIR}/pid"
     if ! loop::claim_pid; then
+      loop::assert_pid_written
       trinity::log "他プロセスが同時に引き継いだ。何もせず終了する。"
       exit 0
     fi
@@ -124,7 +128,7 @@ loop_main() {
     redrive_body="$(cat "${RUN_DIR}/redrive")"
     last_section="$(awk '
       /^## 修正要望（re-drive）$/ { buf=""; capture=1; next }
-      capture && /^## / { capture=0 }
+      capture && /^## (修正要望（re-drive）|確定事項（ループ [0-9]+ で確認済み）)$/ { capture=0 }
       capture { buf = buf $0 "\n" }
       END { printf "%s", buf }
     ' "${RUN_DIR}/requirement.md" 2>/dev/null)"
