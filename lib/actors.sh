@@ -38,23 +38,22 @@ trinity::agent_body() {
 
 # trinity::guard_settings — lib/guard.sh を PreToolUse フックとして注入する --settings JSON。
 # 役割ごとの許否は TRINITY_ROLE（env）で guard.sh 自身が分岐するため、JSON 自体は共通でよい。
-# git はサブプロセスとして exec されるため matcher の対象外とし、PATH prepend した shim（下記
-# trinity::claude）が exec 時点の argv で捕捉する。matcher は Write/Edit/NotebookEdit のみに絞る。
+# matcher は Write/Edit/NotebookEdit（ファイル書き込みの範囲）と Bash（git の役割別ポリシー）を
+# 対象とする。git は guard.sh が command を分解して直接判定する（PATH は一切いじらない）。
 trinity::guard_settings() {
   local escaped_root="${TRINITY_ROOT//\\/\\\\}"
   escaped_root="${escaped_root//\"/\\\"}"
-  printf '{"hooks":{"PreToolUse":[{"matcher":"Write|Edit|NotebookEdit","hooks":[{"type":"command","command":"%s/lib/guard.sh"}]}]}}' \
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Write|Edit|NotebookEdit|Bash","hooks":[{"type":"command","command":"%s/lib/guard.sh"}]}]}}' \
     "${escaped_root}"
 }
 
 # trinity::claude ROLE MODEL CWD PROMPT — headless な claude を1回起動し標準出力を返す。
 # CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可しつつ、
-# lib/guard.sh を PreToolUse フックとして per-actor 注入し Write/Edit の役割境界を enforce する。
-# git の役割境界は lib/git-shim/git を子の PATH 先頭に prepend して enforce する（親 PATH は不変）。
+# lib/guard.sh を PreToolUse フックとして per-actor 注入し、Write/Edit と Bash の git の役割境界を
+# 単層で enforce する（PATH は一切いじらない）。
 trinity::claude() {
   local role="$1" model="$2" cwd="$3" prompt="$4"
   ( cd "$cwd" && env -u CLAUDECODE TRINITY_ROLE="$role" \
-      PATH="${TRINITY_ROOT}/lib/git-shim:${PATH}" \
       claude -p "$prompt" \
       --model "$model" --permission-mode bypassPermissions \
       --settings "$(trinity::guard_settings)" )
