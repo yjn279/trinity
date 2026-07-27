@@ -35,7 +35,15 @@ slug<TAB>worktree<TAB>branch<TAB>title
 
 ### 3. Launch
 
-`backlog.tsv` の各行につき、`<RUN_DIR>/status` がまだ無い Issue、または `<RUN_DIR>/redrive` があり `<RUN_DIR>/pid` が生存していない（`kill -0` が失敗する）Issue だけを起動する。それ以外（status があり、redrive が無いか pid が生存している）はスキップする——生存していれば手順4の監視に回し、redrive の無い終端状態（`passed`／`failed`／`error`）ならすでに手順4・5で処理済みとして扱う。起動は `trinity loop` を Bash ツールの `run_in_background` で背景タスクとして立ち上げ、出力を `${RUN_DIR}/pipeline.out` へ追記する。
+`backlog.tsv` の各行につき、`<RUN_DIR>/pid` の生死で三態を判定し起動するかを決める。
+
+| `pid` | 意味 | 対応 |
+| :-- | :-- | :-- |
+| ある。プロセスが生存（`kill -0` 成功） | 走行中 | 起動しない。手順4の監視に回す。 |
+| 無い | 終端済み（passed／failed／error） | `<RUN_DIR>/redrive` があれば起動する。無ければ手順4・5で処理済みとしてスキップする。 |
+| ある。プロセスが死んでいる（`kill -0` 失敗） | 走行中にクラッシュ | 起動する。`loop` が段ごとのチェックポイントから中断点を拾って続きを走る。 |
+
+二重起動を実際に防ぐのは `loop` 自身が `pid` を原子的に主張する機構であり、この判定は起動回数を減らすための選択に過ぎない。起動は `trinity loop` を Bash ツールの `run_in_background` で背景タスクとして立ち上げ、出力を `${RUN_DIR}/pipeline.out` へ追記する。
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/trinity" loop "${RUN_DIR}" "${WORKTREE_DIR}" "${BRANCH}" >> "${RUN_DIR}/pipeline.out" 2>&1
