@@ -4,11 +4,12 @@
 # サブコマンド:
 #   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
 #       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
-#       起動時に自身の PID を RUN_DIR/pid に記録する。確認が要るときは RUN_DIR/ask/q を
+#       起動時に自身の PID を RUN_DIR/pid に原子的に主張する。確認が要るときは RUN_DIR/ask/q を
 #       書いて needs-input でブロックする。再起動時は RUN_DIR の既存成果物から中断点を
-#       判定して再開する。RUN_DIR/redrive があれば修正要望として requirement.md に追記し、
-#       最大 eval 番号 + 1 から plan モードで、その開始ループから TRINITY_MAX_LOOPS 回ぶんの
-#       予算で再収束する。
+#       判定して再開する。RUN_DIR/redrive があれば修正要望を requirement.md に一度だけ
+#       取り込み、最大 eval 番号 + 1 から plan モードで、その開始ループから TRINITY_MAX_LOOPS
+#       回ぶんの予算で再収束する。マーカーは新しい PASS 到達時と終端 failed 到達時にのみ
+#       消し、再開を跨いでも再収束が未完なら残り続ける。
 
 set -euo pipefail
 
@@ -66,11 +67,8 @@ loop_main() {
   # RUN_DIR の既存成果物から再開ループ番号とモードを返す。
   # 出力形式: "<n> <mode>"（例: "2 plan"）。PASS 済みのときは "PASS" のみ。
   # 各段は自己スキップするため入口判定は不要。
-  # REDRIVE=1（redrive マーカーを消費済み）のときは PASS 短絡を行わず、
+  # redrive マーカーが残っている（＝再収束が未完）ときは PASS 短絡を行わず、
   # 最大 eval 番号 + 1 を常に plan モードで返す（修正要望による再収束）。
-  # REDRIVE は本関数の local ではなく enclosing scope（loop_main）の local を
-  # 動的スコープ経由で参照する。loop::ask が RUN_DIR・loop を同様に参照するのと
-  # 同型の作法であり、loop_main 内でのみ呼び出す前提に依存する。
   loop::resume_point() {
     local k=0 k_verdict="" num="" verdict="" f
     for f in "${RUN_DIR}"/eval-*.md; do
@@ -86,7 +84,7 @@ loop_main() {
       if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
     done
 
-    if [ "${REDRIVE}" -eq 1 ]; then
+    if [ -f "${RUN_DIR}/redrive" ]; then
       printf '%s plan\n' "$((k + 1))"; return
     fi
 
@@ -106,15 +104,19 @@ loop_main() {
 
   trinity::log "loop 開始: ${BRANCH}"
 
-  # redrive マーカーがあれば修正要望を requirement.md へ追記して消費する
-  # （ask/a を requirement.md へ追記する既存作法に倣う）。以降の resume_point は
-  # この REDRIVE フラグで PASS 短絡を回避する。
-  local REDRIVE=0
+  # redrive マーカーがあれば修正要望を requirement.md へ取り込む。マーカー自体は
+  # 消さない。再収束が完了する（新しい PASS または終端 failed に達する）までの
+  # 耐久状態として残し、途中でクラッシュして再起動しても未完のまま続きから拾える
+  # ようにする。取り込み済みかどうかは requirement.md の内容そのもので判断し、
+  # 再開のたびに同じ文が重複追記されないようにする。
   if [ -f "${RUN_DIR}/redrive" ]; then
-    { printf '\n## 修正要望（re-drive）\n'; cat "${RUN_DIR}/redrive"; } >> "${RUN_DIR}/requirement.md"
-    rm -f "${RUN_DIR}/redrive"
-    REDRIVE=1
-    trinity::log "re-drive 信号を検出した。requirement.md に追記し、最大 eval 番号 + 1 から plan で再収束する"
+    local redrive_body req_content
+    redrive_body="$(cat "${RUN_DIR}/redrive")"
+    req_content="$(cat "${RUN_DIR}/requirement.md" 2>/dev/null || true)"
+    if [[ "${req_content}" != *"${redrive_body}"* ]]; then
+      { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_body}"; } >> "${RUN_DIR}/requirement.md"
+      trinity::log "re-drive 信号を検出した。requirement.md に取り込み、最大 eval 番号 + 1 から plan で再収束する"
+    fi
   fi
 
   local resume loop mode rc
@@ -128,16 +130,11 @@ loop_main() {
   [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
 
   # re-drive は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの予算を
-  # 相対的に与える（通常の crash-resume は従来どおり絶対上限のまま）。
-  # max_loop は二役を持つ: 通常時は絶対上限（TRINITY_MAX_LOOPS そのもの）、
-  # redrive 時は開始ループ相対の上限（loop + TRINITY_MAX_LOOPS - 1）。
-  # この予算相対化は redrive が terminal な Issue（プロセス消滅済み）への新規
-  # 収束試行であることを前提とする。round 途中で loop プロセスごとクラッシュし
-  # 再起動された場合、この拡張予算はディスクへ永続しないため失われる（既知の
-  # 限界。永続化は状態機械の追加が要るため別 Issue で扱う。本硬化では Orchestrator
-  # の pid 生存チェックで mid-flight の二重起動のみ防ぐ）。
+  # 相対的に与える（通常の crash-resume は従来どおり絶対上限のまま）。redrive マーカーは
+  # 再収束が完了するまで残るため、この判定は再起動のたびにディスクから読み直され、
+  # 拡張予算はクラッシュ後の再開でも失われない。
   local max_loop="${TRINITY_MAX_LOOPS}"
-  [ "${REDRIVE}" -eq 1 ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
+  [ -f "${RUN_DIR}/redrive" ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
 
   while [ "${loop}" -le "${max_loop}" ]; do
     if [ "${mode}" = plan ]; then
@@ -158,7 +155,7 @@ loop_main() {
     rc=0
     trinity::evaluate "${loop}" || rc=$?
     case "${rc}" in
-      0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; exit 0 ;;
+      0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; rm -f "${RUN_DIR}/redrive"; exit 0 ;;
       2) mode=plan ;;    # NEEDS_REVISION → 再計画
       3) mode=revise ;;  # FAIL → 既存計画の範囲内で修正
       *) exit 1 ;;
@@ -166,6 +163,7 @@ loop_main() {
     loop=$((loop + 1))
   done
 
+  rm -f "${RUN_DIR}/redrive"
   trinity::status failed
   trinity::log "ループ ${max_loop} まで回したが PASS に到達しなかった"
   exit 2
