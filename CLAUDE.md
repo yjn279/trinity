@@ -47,7 +47,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
 | Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
 | Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト。`requirement.md` へ一度だけ取り込まれ、新しい PASS または終端 failed まで耐久状態として残る） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
-| `loop` | `${RUN_DIR}/pid`（自身の PID。起動時に原子的に主張し、終端 passed／failed／error で削除） | Orchestrator の再起動ガード（生死で走行中・終端・クラッシュの三態を判別） |
+| `loop` | `${RUN_DIR}/pid`（自身の PID。起動時に原子的に主張し、終端 passed／failed／error で削除） | Orchestrator の再起動ガード（`status` の有無とあわせ、未起動・走行中・終端・クラッシュを判別） |
 
 ## Invariants
 

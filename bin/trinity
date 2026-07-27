@@ -46,7 +46,11 @@ loop_main() {
       exit 0
     fi
     trinity::log "pid ${existing_pid} は死んでいる（stale）。引き継いで再開する。"
-    printf '%s\n' "$$" > "${RUN_DIR}/pid"
+    # 一時ファイルへ書いてから同一ファイルシステム内で mv することで、他プロセスが
+    # 書きかけの内容を読む窓を作らずに置き換える。
+    local tmp_pid="${RUN_DIR}/pid.$$.tmp"
+    printf '%s\n' "$$" > "${tmp_pid}"
+    mv -f "${tmp_pid}" "${RUN_DIR}/pid"
   fi
 
   # 設計分岐の確認: plan.md の `## 要確認の論点` を ask/q に出し、回答（ask/a）を待つ。
@@ -107,12 +111,22 @@ loop_main() {
   # redrive マーカーがあれば修正要望を requirement.md へ取り込む。マーカー自体は
   # 消さない。再収束が完了する（新しい PASS または終端 failed に達する）までの
   # 耐久状態として残し、途中でクラッシュして再起動しても未完のまま続きから拾える
-  # ようにする。取り込み済みかどうかは redrive.consumed の有無で判断し、
-  # 再開のたびに同じ文が重複追記されないようにする。
-  if [ -f "${RUN_DIR}/redrive" ] && [ ! -f "${RUN_DIR}/redrive.consumed" ]; then
-    { printf '\n## 修正要望（re-drive）\n'; cat "${RUN_DIR}/redrive"; } >> "${RUN_DIR}/requirement.md"
-    : > "${RUN_DIR}/redrive.consumed"
-    trinity::log "re-drive 信号を検出した。requirement.md に取り込み、最大 eval 番号 + 1 から plan で再収束する"
+  # ようにする。取り込み済みかどうかは新しい印を持たず、requirement.md 末尾の
+  # 直近の「## 修正要望（re-drive）」節の本文と redrive の内容を比較して判断する。
+  # 内容が異なれば（初回、または内容を変えた再度の要望なら）新しい節として追記する。
+  if [ -f "${RUN_DIR}/redrive" ]; then
+    local redrive_body last_section
+    redrive_body="$(cat "${RUN_DIR}/redrive")"
+    last_section="$(awk '
+      /^## 修正要望（re-drive）$/ { buf=""; capturing=1; next }
+      capturing && /^## / { capturing=0 }
+      capturing { buf = buf $0 ORS }
+      END { printf "%s", buf }
+    ' "${RUN_DIR}/requirement.md")"
+    if [ "${redrive_body}" != "${last_section}" ]; then
+      { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_body}"; } >> "${RUN_DIR}/requirement.md"
+      trinity::log "re-drive 信号を検出した。requirement.md に取り込み、最大 eval 番号 + 1 から plan で再収束する"
+    fi
   fi
 
   local resume loop mode rc
@@ -151,7 +165,7 @@ loop_main() {
     rc=0
     trinity::evaluate "${loop}" || rc=$?
     case "${rc}" in
-      0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; rm -f "${RUN_DIR}/redrive" "${RUN_DIR}/redrive.consumed"; exit 0 ;;
+      0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; exit 0 ;;
       2) mode=plan ;;    # NEEDS_REVISION → 再計画
       3) mode=revise ;;  # FAIL → 既存計画の範囲内で修正
       *) exit 1 ;;
@@ -159,7 +173,6 @@ loop_main() {
     loop=$((loop + 1))
   done
 
-  rm -f "${RUN_DIR}/redrive" "${RUN_DIR}/redrive.consumed"
   trinity::status failed
   trinity::log "ループ ${max_loop} まで回したが PASS に到達しなかった"
   exit 2
