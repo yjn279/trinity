@@ -25,9 +25,13 @@ trinity::log() {
 # trinity::status STATE — 状態を1語で RUN_DIR/status に記録する。
 # 取りうる値: planning generating reviewing evaluating needs-input needs-revision revising passed failed error
 # passed/failed/error のみ終端。failed はループ上限到達を表し、FAIL 判定（継続）は revising を使う。
+# 終端に至ったときは RUN_DIR/pid を消し、「pid の有無」が走行中/終端済みの信号になるようにする。
 trinity::status() {
   printf '%s\n' "$1" > "${RUN_DIR}/status"
   trinity::log "status -> $1"
+  case "$1" in
+    passed | failed | error) rm -f "${RUN_DIR}/pid" ;;
+  esac
 }
 
 # trinity::agent_body ROLE — agents/<role>.md の本文（frontmatter を除く）を出力する。

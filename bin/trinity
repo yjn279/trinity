@@ -30,11 +30,23 @@ loop_main() {
   export RUN_DIR WORKTREE_DIR BRANCH
 
   mkdir -p "${RUN_DIR}/ask"
-  printf '%s\n' "$$" > "${RUN_DIR}/pid"
   # shellcheck source=lib/actors.sh
   . "${TRINITY_ROOT}/lib/actors.sh"
 
   : "${TRINITY_MAX_LOOPS:=5}"
+
+  # pid を原子的に主張する（O_EXCL）。既存かつ生存していれば多重起動として何もせず終わる。
+  # 死んでいれば前回のクラッシュ跡（stale）として引き継ぎ、続きから再開する。
+  if ! ( set -o noclobber; printf '%s\n' "$$" > "${RUN_DIR}/pid" ) 2>/dev/null; then
+    local existing_pid
+    existing_pid="$(cat "${RUN_DIR}/pid" 2>/dev/null || true)"
+    if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+      trinity::log "既に実行中（pid ${existing_pid}）。何もせず終了する。"
+      exit 0
+    fi
+    trinity::log "pid ${existing_pid} は死んでいる（stale）。引き継いで再開する。"
+    printf '%s\n' "$$" > "${RUN_DIR}/pid"
+  fi
 
   # 設計分岐の確認: plan.md の `## 要確認の論点` を ask/q に出し、回答（ask/a）を待つ。
   # 人間の確認に締切は設けない（回答が来るまで安価に待つ）。
