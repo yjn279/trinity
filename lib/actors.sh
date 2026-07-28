@@ -196,26 +196,39 @@ trinity::revise() {
   trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-revise.md" "revise"
 }
 
+# trinity::tool_step LOOP NAME PROMPT — 道具1つぶんの手順。name-<loop>.md が既にあれば
+# スキップする（再開のチェックポイント）。無ければ作業用ファイルへ出力し、道具が戻ってから
+# 本来の名前へ改名する。改名は同一ディレクトリ内で不可分なため、中断した道具は本来の名前の
+# ファイルを残さない（＝在る＝終わった、が他段と同じく成り立つ）。完了印は終了コードに
+# よらず道具が戻った時点で立てる。非ゼロ終了も警告のうえ証拠としてそのまま残す。
+trinity::tool_step() {
+  local loop="$1" name="$2" prompt="$3" out tmp
+  out="${RUN_DIR}/${name}-${loop}.md"
+  if trinity::has_report "${out}"; then
+    trinity::log "${out} が既にある。${name} をスキップする"
+    return 0
+  fi
+  tmp="${out}.tmp"
+  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "${prompt}" \
+    > "${tmp}" 2>&1 \
+    || trinity::log "WARN: ${name} が非ゼロで終了した"
+  mv "${tmp}" "${out}"
+}
+
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
+# 道具ごとに trinity::tool_step でチェックポイントするため、再開時は済んだ道具から先に進む。
 trinity::tools() {
   local loop="$1" base; base="$(trinity::base)"
   trinity::status reviewing
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/code-review --fix ${base}..HEAD" > "${RUN_DIR}/review-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /code-review --fix が非ゼロで終了した"
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/simplify" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /simplify が非ゼロで終了した"
+  trinity::tool_step "$loop" review "/code-review --fix ${base}..HEAD"
+  trinity::tool_step "$loop" simplify "/simplify"
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
     git -C "${WORKTREE_DIR}" add -A || true
     git -C "${WORKTREE_DIR}" commit -q -m "chore: 道具の自動修正を反映する" || true
   fi
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。" \
-    > "${RUN_DIR}/verify-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /verify が非ゼロで終了した"
+  trinity::tool_step "$loop" verify "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。"
 }
 
 # trinity::evaluate LOOP — Evaluator を起動し eval-<n>.md を書かせる。戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=不明。
