@@ -53,7 +53,7 @@ slug<TAB>worktree<TAB>branch<TAB>title
 | `needs-input` | `<RUN_DIR>/ask/q`（Planner の `## 要確認の論点`）を読み、`AskUserQuestion` でユーザーに提示する。内容は解釈・判定せず運搬する。回答を `<RUN_DIR>/ask/a` に書く——`loop` のブロックが解け、Planner が確定事項を反映して再計画する。複数の Issue が同時に `needs-input` なら Issue ごとに直列で問う。書き終えたら同じ Issue のポーリングを続ける。`AskUserQuestion` を呼ぶのは常にあなた一人。 |
 | `passed`／`failed`／`error` | 終端に到達。全 Issue が終端に達したら次へ進む。未起動の後続 Issue があれば worktree を用意して backlog に追記し、手順3を再実行する。 |
 
-API 課金エラーやレートリミットで背景タスクが途中で止まっても、作業環境と `.trinity/<session>/` が残っていれば手順3を再実行すればよい。`loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップして中断点から再開する。
+API 課金エラーやレートリミットで背景タスクが途中で止まっても、作業環境と `.trinity/<session>/` が残っていれば手順3を再実行すればよい。`loop` は段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md`・`eval-<n>.md`）から完了済みの段・タスク・道具をスキップして中断点から再開する。
 
 `<RUN_DIR>/status` が `passed` の Issue は PR 作成へ進める。`failed`（ループ上限で未到達）・`error` の Issue は、`eval-*.md`・`pipeline.out` を読んで原因をユーザーに報告する。あなたはコードを直さない。
 

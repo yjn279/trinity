@@ -44,7 +44,7 @@ loop_main() {
     ( set -o noclobber; printf '%s\n' "$$" > "${RUN_DIR}/pid" ) 2>/dev/null
   }
   loop::assert_pid_written() {
-    [ -e "${RUN_DIR}/pid" ] || { trinity::log "pid ファイルの作成に失敗した"; exit 1; }
+    trinity::has_report "${RUN_DIR}/pid" || { trinity::log "pid ファイルの作成に失敗した"; exit 1; }
   }
   if ! loop::claim_pid; then
     loop::assert_pid_written
@@ -128,10 +128,10 @@ loop_main() {
     redrive_body="$(cat "${RUN_DIR}/redrive")"
     last_section="$(awk '
       /^## 修正要望（re-drive）$/ { buf=""; capture=1; next }
-      capture && /^## (修正要望（re-drive）|確定事項（ループ [0-9]+ で確認済み）)$/ { capture=0 }
+      capture && /^## / { capture=0 }
       capture { buf = buf $0 "\n" }
       END { printf "%s", buf }
-    ' "${RUN_DIR}/requirement.md" 2>/dev/null)"
+    ' "${RUN_DIR}/requirement.md" 2>/dev/null)" || last_section=""
     if [ "${redrive_body}" != "${last_section}" ]; then
       { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_body}"; } >> "${RUN_DIR}/requirement.md"
       trinity::log "re-drive 信号を検出した。requirement.md に取り込み、最大 eval 番号 + 1 から plan で再収束する"
@@ -149,8 +149,8 @@ loop_main() {
   [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
 
   # re-drive は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの予算を
-  # 相対的に与える（通常の crash-resume は従来どおり絶対上限のまま）。redrive は再収束が
-  # 完了するまで残るため、この判定は再起動のたびにディスクから読み直され、拡張予算は
+  # 相対的に与える（redrive が無いときは TRINITY_MAX_LOOPS を絶対上限として扱う）。redrive は
+  # 再収束が完了するまで残るため、この判定は再起動のたびにディスクから読み直され、拡張予算は
   # クラッシュ後の再開でも失われない。
   local max_loop="${TRINITY_MAX_LOOPS}"
   [ -f "${RUN_DIR}/redrive" ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
