@@ -209,7 +209,7 @@ trinity::tool_step() {
     return 0
   fi
   tmp="${out}.tmp"
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "${prompt}" \
+  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
     > "${tmp}" 2>&1 \
     || trinity::log "WARN: ${name} が非ゼロで終了した"
   mv "${tmp}" "${out}"
