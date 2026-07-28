@@ -53,11 +53,16 @@ trinity::guard_settings() {
 # CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可しつつ、
 # lib/guard.sh を PreToolUse フックとして per-actor 注入し、Write/Edit と Bash の git の役割境界を
 # 単層で enforce する（PATH は一切いじらない）。
+# --strict-mcp-config で利用者グローバルの MCP サーバ（playwright→Chromium・supabase・notion 等）を
+# 継承しない。アクターは組み込みツール（Read/Write/Edit/Bash/Glob/Grep）と git だけで完結し、これらは
+# 一切使わない。継承すると子1本あたり約 350MB の未使用サーバが常駐してメモリ圧の主因になり、かつ
+# 隔離されたコード生成が利用者の Notion/DB へ触れ得る不整合も生む。空きが無いので継承を断つ。
 trinity::claude() {
   local role="$1" model="$2" cwd="$3" prompt="$4"
   ( cd "$cwd" && env -u CLAUDECODE TRINITY_ROLE="$role" \
       claude -p "$prompt" \
       --model "$model" --permission-mode bypassPermissions \
+      --strict-mcp-config \
       --settings "$(trinity::guard_settings)" )
 }
 

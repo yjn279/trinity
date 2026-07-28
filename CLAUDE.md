@@ -56,7 +56,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 規約 | 内容 |
 | :-- | :-- |
 | Orchestrator はコードに触れない | コードの読み書きは必ず Generator に委譲する。 |
-| アクターは `claude -p` 経由 | Planner・Generator・Evaluator は `lib/actors.sh` の関数が `claude -p` の子プロセスとして起動する。アクターの振る舞いの単一の正は `agents/<role>.md`。起動は必ず `trinity::spawn` を通す。利用可能メモリが `TRINITY_MIN_FREE_PCT`（既定 15%）を下回れば起動せず（jetsam に殺される前に fail-closed）、起動後に SIGKILL 等で異常死したら握りつぶさず loop を止める。いずれも `status` を `error` にし、メモリを空けての再実行が checkpoint から再開する。 |
+| アクターは `claude -p` 経由 | Planner・Generator・Evaluator は `lib/actors.sh` の関数が `claude -p` の子プロセスとして起動する。アクターの振る舞いの単一の正は `agents/<role>.md`。起動は `--strict-mcp-config` で利用者グローバルの MCP サーバを継承しない（アクターは組み込みツールと git だけで完結し、継承すると子1本あたり約 350MB の未使用サーバが常駐してメモリ圧の主因になる）。起動は必ず `trinity::spawn` を通す。利用可能メモリが `TRINITY_MIN_FREE_PCT`（既定 15%）を下回れば起動せず（jetsam に殺される前に fail-closed）、起動後に SIGKILL 等で異常死したら握りつぶさず loop を止める。いずれも `status` を `error` にし、メモリを空けての再実行が checkpoint から再開する。 |
 | 権限は機構で enforce | 役割境界は `lib/guard.sh` の PreToolUse フック一本（単層）で enforce する。Bash tool の `command` から git を role 別 allowlist（deny-by-default）で判定し、Planner・Evaluator は読み取り専用サブコマンド、Generator はそれに worktree 内の状態変更を加えたものへ倒す。allowlist 外（alias 名を含む）と `config` 書き込み・`-c`・git を含む複合コマンドは deny する。Write/Edit（および NotebookEdit）の許容範囲も同じフックが判定する。`trinity::claude` が per-actor に注入する。frontmatter の `tools:` は意図表現に留まり、同梱 `settings.json` はスキーマ宣言のみのまま変更しない。 |
 | worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}" <cmd>` で操作し、 `cd` で代替しない。ユーザーのチェックアウトには触れない。 |
 | 引用は worktree 相対 | `plan.md` ・ `eval-<n>.md` 内の `path:line` は `WORKTREE_DIR` 起点の相対パスで書く。 |
