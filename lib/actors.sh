@@ -16,6 +16,8 @@
 : "${TRINITY_EVALUATOR_MODEL:=sonnet}"
 
 readonly TRINITY_RC_NEEDS_INPUT=10
+readonly TRINITY_RC_LOW_MEMORY=20
+readonly TRINITY_RC_KILLED=21
 
 # trinity::log MSG — RUN_DIR/trinity.log と stderr の両方へ追記する。
 trinity::log() {
@@ -57,6 +59,43 @@ trinity::claude() {
       claude -p "$prompt" \
       --model "$model" --permission-mode bypassPermissions \
       --settings "$(trinity::guard_settings)" )
+}
+
+# trinity::memory_available_pct — 利用可能メモリの割合(%)を返す。測れない環境では空を返す。
+# darwin は kern.memorystatus_level（jetsam がプロセスを殺すか判断する指標そのもの。
+# `memory_pressure` の "free percentage" と一致する）。macOS の「空きページ」は常時わずかで
+# 誤判定するため、reclaim 可能分を織り込んだこの割合を使う。linux は MemAvailable/MemTotal。
+trinity::memory_available_pct() {
+  case "$(uname -s)" in
+    Darwin) sysctl -n kern.memorystatus_level 2>/dev/null ;;
+    Linux)  awk '/^MemAvailable:/{a=$2} /^MemTotal:/{t=$2} END{if(t>0)print int(a*100/t)}' /proc/meminfo 2>/dev/null ;;
+  esac
+}
+
+# trinity::spawn ROLE MODEL CWD PROMPT OUTFILE — メモリ preflight 付きで claude を起動する。
+# アクター起動の唯一の入口。2つの失敗様式を構造的に扱う:
+#   1. 起動前にメモリ圧が高ければ（利用可能 < TRINITY_MIN_FREE_PCT、既定 15%）起動せず
+#      TRINITY_RC_LOW_MEMORY を返す。jetsam に殺される前に fail-closed で止める。
+#   2. 起動後に SIGKILL 等（終了コード >=128 = 128+シグナル番号）で異常死したら
+#      TRINITY_RC_KILLED を返す。メモリ圧による kill を握りつぶさず loop を止める。
+# retry はしない。メモリを空けて再実行すれば checkpoint から再開する（既存の再開機構を使う）。
+# 通常終了は claude の終了コードをそのまま返し、出力の中身の判定は呼び出し側に委ねる。
+trinity::spawn() {
+  local role="$1" model="$2" cwd="$3" prompt="$4" out="$5" pct min rc=0
+  min="${TRINITY_MIN_FREE_PCT:-15}"
+  pct="$(trinity::memory_available_pct)"
+  if [ -n "$pct" ] && [ "$pct" -lt "$min" ]; then
+    trinity::log "preflight: 利用可能メモリ ${pct}% < ${min}%。${role} を起動しない。メモリを空けて（例: Chrome / 仮想マシン / 余分な端末を終了）再実行すると checkpoint から再開する"
+    trinity::status error
+    return "${TRINITY_RC_LOW_MEMORY}"
+  fi
+  trinity::claude "$role" "$model" "$cwd" "$prompt" > "$out" 2>&1 || rc=$?
+  if [ "$rc" -ge 128 ]; then
+    trinity::log "${role} が signal $((rc - 128)) で異常死した（メモリ圧による kill の可能性）。loop を止める。メモリを空けて再実行すると checkpoint から再開する"
+    trinity::status error
+    return "${TRINITY_RC_KILLED}"
+  fi
+  return "$rc"
 }
 
 # trinity::verdict_of FILE — eval-*.md から VERDICT の値（PASS/NEEDS_REVISION/FAIL）を返す。
@@ -124,10 +163,11 @@ trinity::plan() {
   trinity::status planning
   # tasks.tsv を事前に削除して失敗時の古いファイル誤検出を防ぐ。
   rm -f "${RUN_DIR}/tasks.tsv"
-  local prompt
+  local prompt rc=0
   prompt="$(trinity::agent_body planner)$(trinity::context "$loop")"
-  trinity::claude planner "${TRINITY_PLANNER_MODEL}" "${WORKTREE_DIR}" "$prompt" \
-    > "${RUN_DIR}/planner-${loop}.out" 2>&1 || true
+  trinity::spawn planner "${TRINITY_PLANNER_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+    "${RUN_DIR}/planner-${loop}.out" || rc=$?
+  [ "$rc" -ge "${TRINITY_RC_LOW_MEMORY}" ] && return "$rc"
   if [ ! -f "${RUN_DIR}/plan.md" ]; then
     trinity::status error; return 1
   fi
@@ -147,7 +187,7 @@ trinity::plan() {
 # trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する（正当な変更不要ならコミット無しで完了する）。
 # gen-<n>-task-<i>.md（完了レポート）が既にあるタスクはスキップする（再開のチェックポイント）。
 trinity::generate() {
-  local loop="$1" idx title files prompt pre_sha agent_body
+  local loop="$1" idx title files prompt pre_sha agent_body rc
   trinity::status generating
   local total; total="$(awk -F'\t' '$1~/^[0-9]+$/{n++} END{print n+0}' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
   agent_body="$(trinity::agent_body generator)"
@@ -164,8 +204,10 @@ trinity::generate() {
 - TaskTotal: ${total}
 - TaskTitle: ${title}
 - TaskFiles: ${files}"
-    trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
-      > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
+    rc=0
+    trinity::spawn generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+      "${RUN_DIR}/gen-${loop}-task-${idx}.out" || rc=$?
+    [ "$rc" -ge "${TRINITY_RC_LOW_MEMORY}" ] && return "$rc"
     trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-task-${idx}.md" "generate task ${idx}"
   done < "${RUN_DIR}/tasks.tsv"
 }
@@ -173,7 +215,7 @@ trinity::generate() {
 # trinity::revise LOOP — FAIL のとき計画の範囲内で修正コミットを作らせる。
 # gen-<n>-revise.md（完了レポート）が既にあればスキップする（再開のチェックポイント）。
 trinity::revise() {
-  local loop="$1" prompt pre_sha
+  local loop="$1" prompt pre_sha rc=0
   if trinity::has_report "${RUN_DIR}/gen-${loop}-revise.md"; then
     trinity::log "gen-${loop}-revise.md が既にある。revise をスキップする"
     return 0
@@ -182,42 +224,49 @@ trinity::revise() {
   pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
   prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
 - 修正モード: ${RUN_DIR}/eval-$((loop - 1)).md の指摘を既存計画の範囲内で修正する。新規タスクは追加しない。"
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
-    > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
+  trinity::spawn generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+    "${RUN_DIR}/gen-${loop}-revise.out" || rc=$?
+  [ "$rc" -ge "${TRINITY_RC_LOW_MEMORY}" ] && return "$rc"
   trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-revise.md" "revise"
+}
+
+# trinity::run_tool PROMPT OUTFILE LABEL — 前段の道具（/code-review 等）を1つ回す。
+# kill・低メモリ（>=TRINITY_RC_LOW_MEMORY）はそのコードを返して loop を止める。通常エラーは
+# WARN でログに残すだけで続行する（証拠が1つ欠けても Evaluator は残りの証拠で判定できる）。
+trinity::run_tool() {
+  local prompt="$1" out="$2" label="$3" rc=0
+  trinity::spawn generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" "$out" || rc=$?
+  [ "$rc" -ge "${TRINITY_RC_LOW_MEMORY}" ] && return "$rc"
+  [ "$rc" -ne 0 ] && trinity::log "WARN: ${label} が exit ${rc} で終了した"
+  return 0
 }
 
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
 trinity::tools() {
   local loop="$1" base; base="$(trinity::base)"
   trinity::status reviewing
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/code-review --fix ${base}..HEAD" > "${RUN_DIR}/review-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /code-review --fix が非ゼロで終了した"
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/simplify" > "${RUN_DIR}/simplify-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /simplify が非ゼロで終了した"
+  trinity::run_tool "/code-review --fix ${base}..HEAD" "${RUN_DIR}/review-${loop}.md" "/code-review --fix" || return $?
+  trinity::run_tool "/simplify" "${RUN_DIR}/simplify-${loop}.md" "/simplify" || return $?
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
     git -C "${WORKTREE_DIR}" add -A || true
     git -C "${WORKTREE_DIR}" commit -q -m "chore: 道具の自動修正を反映する" || true
   fi
-  trinity::claude generator "${TRINITY_GENERATOR_MODEL}" "${WORKTREE_DIR}" \
-    "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。" \
-    > "${RUN_DIR}/verify-${loop}.md" 2>&1 \
-    || trinity::log "WARN: /verify が非ゼロで終了した"
+  trinity::run_tool "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。" \
+    "${RUN_DIR}/verify-${loop}.md" "/verify" || return $?
 }
 
 # trinity::evaluate LOOP — Evaluator を起動し eval-<n>.md を書かせる。戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=不明。
 trinity::evaluate() {
-  local loop="$1" prompt verdict
+  local loop="$1" prompt verdict rc=0
   trinity::status evaluating
   prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
 - ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
 - 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
-  trinity::claude evaluator "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
-    > "${RUN_DIR}/evaluator-${loop}.out" 2>&1 || true
+  trinity::spawn evaluator "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
+    "${RUN_DIR}/evaluator-${loop}.out" || rc=$?
+  [ "$rc" -ge "${TRINITY_RC_LOW_MEMORY}" ] && return "$rc"
   verdict="$(trinity::verdict_of "${RUN_DIR}/eval-${loop}.md")"
   case "${verdict}" in
     PASS)           trinity::status passed;        return 0 ;;
