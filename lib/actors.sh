@@ -56,6 +56,7 @@ trinity::claude() {
   ( cd "$cwd" && env -u CLAUDECODE TRINITY_ROLE="$role" \
       claude -p "$prompt" \
       --model "$model" --permission-mode bypassPermissions \
+      --strict-mcp-config \
       --settings "$(trinity::guard_settings)" )
 }
 
