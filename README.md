@@ -1,36 +1,23 @@
 # Trinity
 
-Trinity は、計画・実装・評価を分業する3つのエージェント（Planner・Generator・Evaluator）で、長時間のエンジニアリングタスクを走り切る Claude Code プラグインである。`/trinity:run <要件>` で起動すると、隔離された worktree の中で Generator が実装してコミットし、Evaluator が本番投入できる品質と認めるまで反復する。承認後は Orchestrator が PR を作成し、マージと後片付けまで進める。
+Trinity は、計画・実装・評価を分業する3つのエージェント（Planner・Generator・Evaluator）で、長時間のエンジニアリングタスクを走り切る Claude Code プラグインである。`/trinity:run <要件>` で起動すると、隔離された worktree の中で実装とコミットを重ね、Evaluator が本番投入できる品質と認めるまで反復し、PR の作成からマージ・後片付けまで進める。
 
-ユーザーが関わるのは最初と最後だけである。起動直後に設計の分岐を確定し、最後に PR の受け入れを判断する。その間に確認は無く、長時間完全に自律で動く。導入すれば設定なしで使える。
+ユーザーが関わるのは、起動直後の設計確認と最後の受け入れ判断の2回だけである。その間に確認は無く、導入すれば設定なしで使える。
 
 ## 役割
 
-計画・実装・評価を1つの文脈に同居させると、文脈が膨らむほど計画が実装の都合で書き換わり、評価者が自分の作品に甘くなる。Trinity は役割を分け、それぞれに固有の指示と新鮮な文脈を与える。
+計画・実装・評価を1つの文脈に同居させると、文脈が膨らむほど計画が実装の都合で書き換わり、評価者が自分の作品に甘くなる。Trinity は役割を分け、それぞれを固有の指示と新鮮な文脈を持つ `claude -p` の別プロセスとして起動する。受け渡しはファイルだけで行い、Evaluator は差分も検証も自分で再導出するため、「自分の書いたコードに甘くなる」という単一エージェントの典型的な失敗が設計上起こらない。
 
 | 役割 | モデル | 担当 |
 | :-- | :-- | :-- |
-| Orchestrator | メイン会話 | 要件の解釈・設計の確定・収束ループの起動と監視・PR 作成・受け入れ確認・後片付け |
-| Planner | opus | 要件を、受け入れ基準付きの計画と機械可読なタスク一覧に展開する |
+| Orchestrator | メイン会話 | 要件の解釈・設計の確定・ループの起動と監視・PR 作成・受け入れ確認・後片付け |
+| Planner | opus | 要件を、受け入れ基準付きの計画とタスク一覧に展開する |
 | Generator | sonnet | 割り当てられたタスクを worktree の中で実装し、検証を通してコミットする |
-| Evaluator | sonnet | コミットを4軸で独立に評価し、3値の判定を返す |
-
-Evaluator の独立性は、ファイル渡しの通信で構造的に強制される。各アクターは headless な `claude -p` の別プロセスとして起動され、互いのチャット文脈を見ない。Evaluator は計画と git の差分だけを読み、検証も自分で再実行する。「自分の書いたコードに甘くなる」という単一エージェントの典型的な失敗が、設計上起こらない。
-
-## 評価
-
-機械的に直せる指摘は、評価の前段で道具（`/code-review --fix`・`/simplify`）が自動で修正する。道具は差分につき一度だけ走り、Evaluator はその結果を証拠として読んだうえで、機械に委ねられない次の4軸だけを判断する。
-
-| 軸 | 問い |
-| :-- | :-- |
-| 要件適合 | 受け入れ基準を実装が満たしているか |
-| デザインの美 | UI・API・データモデルが素直で一貫しているか |
-| コードの美 | 命名・構造・抽象が周囲に馴染み、読み手に易しいか |
-| 要件妥当性 | そもそもの要件・計画が正しいか |
+| Evaluator | sonnet | コミットを4軸（要件適合・デザインの美・コードの美・要件妥当性）で独立に評価し、3値の判定を返す |
 
 ## 流れ
 
-Orchestrator が作業単位ごとにブランチと worktree を切り出し、収束ループを1本ずつ直列に回す。ループの制御はシェル（`bin/trinity loop`）に機械化されており、Orchestrator は起動と監視だけを行う。
+Orchestrator が作業単位ごとにブランチと worktree を切り、収束ループ（`scripts/loop.sh`）を1本ずつ直列に回す。機械的に直せる指摘は道具（`/code-review --fix`・`/simplify`）が差分につき一度だけ自動修正し、Evaluator は機械に委ねられない4軸の判断に集中する。
 
 ```mermaid
 flowchart LR
@@ -47,7 +34,7 @@ flowchart LR
   evaluate -->|合格| pullRequest[PR]
 ```
 
-Evaluator の判定がループの継続と離脱を決める。離脱は `PASS` だけで決まる。
+Evaluator の判定がループの継続と離脱を決める。
 
 | 判定 | 動作 |
 | :-- | :-- |
@@ -73,23 +60,16 @@ Evaluator の判定がループの継続と離脱を決める。離脱は `PASS`
 
 ## 前提
 
-`bash`・`git`・`claude` CLI が PATH にあり、次のスキルとコマンドが導入されていること。未導入のものは `/trinity:run` の起動時に自動で検出し、確認なしでセットアップされる（`~/.claude` への変更を含む）。
-
-- [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow) — worktree の作成・ブランチ管理・PR 統合を担う。
-- [code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review) — `/code-review --fix` として差分のバグと整理を自動修正する。
-- `/simplify` — 整理を適用する Claude Code の組み込みコマンド。
+`bash`・`git`・`claude` CLI が PATH にあり、[git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)・[code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review)・`/simplify` が導入されていること。未導入のものは起動時に自動で検出し、確認なしでセットアップされる（`~/.claude` への変更を含む）。
 
 ## 使い方
 
-要件は自由形式の文でも Issue 番号でもよい。
+要件は自由形式の文でも Issue 番号でもよい。複数 Issue は Issue ごとに独立したブランチ・worktree・PR を作り、1本ずつ直列に処理する。途中で停止しても、再度起動すれば中断点から再開する。
 
 ```shell
 /trinity:run ユーザー設定ページにテーマトグルを追加する。
-/trinity:run 認証モジュールを JWT からセッション Cookie に移行する。
 /trinity:run #12 #15 #20
 ```
-
-複数 Issue を渡すと、Issue ごとに独立したブランチ・worktree・PR を作り、1本ずつ直列に処理する。途中で停止した場合は、同じセッションの作業環境が残っていれば再度起動するだけで中断点から再開する。
 
 ## 参考
 

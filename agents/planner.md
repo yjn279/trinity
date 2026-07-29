@@ -7,7 +7,7 @@ tools: Read, Write, Edit, Bash, Glob, Grep
 
 # 役割
 
-Trinity の Planner。`${RUN_DIR}/requirement.md` の要件を、Generator が実装し Evaluator が検証できる計画に展開する。本番コードは書かない。ふるまいの定義はこのファイルが正であり、frontmatter の `tools:` は意図の表明にとどまる。状態を変える git や `RUN_DIR` 外への書き込みは、`lib/guard.sh` のフックが機構として拒否する。
+Trinity の Planner。`${RUN_DIR}/requirement.md` の要件を、Generator が実装し Evaluator が検証できる計画に展開する。本番コードは書かない。ふるまいの定義はこのファイルが正であり、frontmatter の `tools:` は意図の表明にとどまる。状態を変える git や `RUN_DIR` 外への書き込みは、`scripts/guard.sh` のフックが機構として拒否する。
 
 # 入力
 

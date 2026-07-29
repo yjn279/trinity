@@ -34,12 +34,12 @@ slug<TAB>worktree<TAB>branch<TAB>title
 起動は Bash ツールの `run_in_background` で背景タスクとして立ち上げる。
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/trinity" loop "${RUN_DIR}" "${WORKTREE_DIR}" "${BRANCH}" >> "${RUN_DIR}/pipeline.out" 2>&1
+"${CLAUDE_PLUGIN_ROOT}/scripts/loop.sh" "${RUN_DIR}" "${WORKTREE_DIR}" "${BRANCH}" >> "${RUN_DIR}/trinity.log" 2>&1
 ```
 
 起動したら `<RUN_DIR>/status` が終端に達するまで、間を置いてポーリングする。終端に達したら次の行へ進む。`failed`（ループ上限で未到達）や `error` でも途中でユーザーに問わず、残りの行を最後まで回してから結果をまとめて報告する。
 
-使用量上限・レートリミット・障害で背景タスクが途中で止まっても、作業環境と `SESSION_DIR` が残っていればこの手順を再実行すればよい。`loop` は段ごとの成果物（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`review-<n>.md`・`simplify-<n>.md`・`eval-<n>.md`）から完了済みの段・タスク・道具を飛ばし、中断点から再開する。二重起動は `loop` 自身が `pid` を原子的に主張して防ぐ。
+使用量上限・レートリミット・障害で背景タスクが途中で止まっても、作業環境と `SESSION_DIR` が残っていればこの手順を再実行すればよい。`loop` は `RUN_DIR` に残る段ごとの成果物から完了済みの段・タスク・道具を飛ばし、中断点から再開する。二重起動は `loop` 自身が `pid` を主張して防ぐ。
 
 ### 4. PR 作成
 
@@ -55,7 +55,7 @@ slug<TAB>worktree<TAB>branch<TAB>title
 
 ### 5. 受け入れ
 
-PR の URL と、`failed` / `error` になった単位の原因（`eval-*.md`・`pipeline.out` を読んで要約する）をユーザーへ共有したうえで、1回の `AskUserQuestion` コール（最大4問）で確認する。各問は条件を満たすときだけ提示する。
+PR の URL と、`failed` / `error` になった単位の原因（`eval-*.md`・`trinity.log` を読んで要約する）をユーザーへ共有したうえで、1回の `AskUserQuestion` コール（最大4問）で確認する。各問は条件を満たすときだけ提示する。
 
 | 問い | 提示条件 | multiSelect |
 | :-- | :-- | :-- |
@@ -69,5 +69,5 @@ PR の URL と、`failed` / `error` になった単位の原因（`eval-*.md`・
 
 1. マージ: 選択された PR を `gh pr merge` でマージする。Other 欄の修正要望が指す PR は選択から除外して据え置く。
 2. 課題起票: 選択された課題を `gh issue create` で登録する。修正要望のあった単位に紐づく課題は、その単位の再収束後に改めて確認する。
-3. 修正要望: Other 欄に記入があれば、その単位の `${RUN_DIR}/redrive` に修正要望の本文を書き、「3. 実行」の手順で `loop` を再起動して終端までポーリングする。`passed` に達したらコミットを push し（同一ブランチのため既存 PR は自動更新される）、その単位だけのマージ問を改めて `AskUserQuestion` で提示して本手順の先頭へ戻る。
+3. 修正要望: Other 欄に記入があれば、その単位の `requirement.md` へ `## 修正要望` の見出しで本文を追記し、空の `<RUN_DIR>/redrive` を作る（再収束の合図。新しい `passed` / `failed` に達したとき `loop` が消す）。「3. 実行」の手順で `loop` を再起動して終端までポーリングし、`passed` に達したらコミットを push する（同一ブランチのため既存 PR は自動更新される）。そのうえで、その単位だけのマージ問を改めて `AskUserQuestion` で提示し、本手順の先頭へ戻る。
 4. クリーンアップ: マージされた単位だけを対象に、`git-flow` スキルに従ってブランチ（リモートを含む）と worktree を削除し、`RUN_DIR` を消す。マージされなかった単位は PR・ブランチ・worktree・`RUN_DIR` をすべて残し、その旨をユーザーに伝える。すべての単位を消したときは `SESSION_DIR` も消す。
