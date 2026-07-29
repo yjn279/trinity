@@ -33,7 +33,7 @@ Trinity の開発では以下のスキルを依存として用いる。仕様・
 
 frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。この境界は `lib/guard.sh` の PreToolUse フック一本（単層）で enforce する。Bash tool の `command` から git を role 別の allowlist（deny-by-default）で判定し（Planner・Evaluator は読み取り専用サブコマンド、Generator はそれに worktree 内の状態変更を加えたもの）、状態を変える evasion は `config` 書き込みと `-c` の deny で閉じる。git を含む複合コマンド（演算子・コマンド置換・行継続）は安全に切り出せないため deny し、単一の git コマンドへ分けさせる。Write/Edit（および NotebookEdit）は書き込み範囲を判定する。`trinity::claude` が per-actor に注入し、frontmatter の `tools:` はあくまで意図表現である。
 
-機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。道具の変更が `requirement.md` と食い違うときの判断は `agents/evaluator.md` の Tool Deviation を正とする。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`eval-<n>.md`）から完了済みの段・タスクをスキップし、中断点から再開する。
+機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。道具の変更が `requirement.md` と食い違うときの判断は `agents/evaluator.md` の Tool Deviation を正とする。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md`・`eval-<n>.md`）から完了済みの段・タスク・道具をスキップし、中断点から再開する。
 
 アクターは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。`claude -p` の別プロセス境界がこの間接化を強制し、Evaluator の独立性を担保する。アクターをメイン会話のネイティブ subagent ではなく `claude -p` の子プロセスとして起動するのには、この独立性のほかに2つの構造的な理由がある。第一に、ネイティブ subagent は入れ子のサブエージェントを起動できないが、`claude -p` の子はフルの Claude Code セッションなので Planner・Generator・Evaluator が自分の作業の中でさらにサブエージェントを呼べる。第二に、long-running 前提のバックグラウンド実行が、メイン会話に張り付かない子プロセスだからこそ成り立つ。Orchestrator は段と段のあいだでコードを読み書きせず、`status`・`ask/` のファイルだけを介して背景パイプラインと通信する。`backlog.tsv` はパイプラインとの通信チャネルではなく、Orchestrator 自身が Issue 集合を書き残し読み返す耐久インデックスである。通信の経路を以下に示す。
 
@@ -46,8 +46,8 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | Evaluator | `${RUN_DIR}/eval-<n>.md`（先頭行 `VERDICT:`） | Planner（次ループ）・パイプライン |
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
 | Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
-| Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
-| `loop` | `${RUN_DIR}/pid`（自身の PID） | Orchestrator の再起動ガード（起動前に `kill -0` で生存確認） |
+| Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト。`requirement.md` へ一度だけ取り込まれ、新しい PASS または終端 failed まで耐久状態として残る） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
+| `loop` | `${RUN_DIR}/pid`（自身の PID。起動時に原子的に主張し、終端 passed／failed／error で削除） | Orchestrator の再起動ガード（`status` の有無とあわせ、未起動・走行中・終端・クラッシュを判別） |
 
 ## Invariants
 
