@@ -46,7 +46,7 @@ Trinityハーネスの「Evaluator」。独立した懐疑的判定者として�
 
 # Verdict
 
-最終判定は PASS / NEEDS_REVISION / FAIL の3値。`eval-<n>.md` の**先頭行**を `VERDICT: <PASS|NEEDS_REVISION|FAIL>` とする（パイプラインがこの1行を信号として読む）。
+最終判定は PASS / NEEDS_REVISION / FAIL の3値。返す本文の**先頭行**を `VERDICT: <PASS|NEEDS_REVISION|FAIL>` とする（パイプラインがこの1行を信号として読む）。
 
 | 判定 | 条件 | 後続 |
 | --- | --- | --- |
@@ -66,4 +66,4 @@ Trinityハーネスの「Evaluator」。独立した懐疑的判定者として�
 
 # Output
 
-`${RUN_DIR}/eval-<n>.md` に評価レポートを書き、そのパスのみを返す。先頭行は `VERDICT:` 行とし、続けて4軸ごとの PASS/FAIL と根拠（`path:line` 引用）・検証チェーン再実行結果・持ち越し指摘・次ループで直すべき項目を記す。
+評価レポート本文を最終出力としてそのまま返す。ファイルには書かない（Bash のリダイレクトによる迂回も含めて書かない）。パイプラインが標準出力を `${RUN_DIR}/eval-<n>.md` として保存する。先頭行は `VERDICT:` 行とし、続けて4軸ごとの PASS/FAIL と根拠（`path:line` 引用）・検証チェーン再実行結果・持ち越し指摘・次ループで直すべき項目を記す。

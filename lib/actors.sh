@@ -232,20 +232,46 @@ trinity::tools() {
   trinity::tool_step "$loop" verify "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。"
 }
 
-# trinity::evaluate LOOP — Evaluator を起動し eval-<n>.md を書かせる。戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=不明。
+# trinity::evaluate LOOP — Evaluator を起動し、返した本文を eval-<n>.md として確定させる。
+# 戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=判定が取れず error。
+# 標準出力（判定本文）と標準エラー（ログ）は混ぜずに別々に受ける。確定は trinity::tool_step と
+# 同じく作業用ファイルからの改名で原子的に行い、非ゼロ終了・出力が空・VERDICT: が読めない、
+# のいずれでも改名せず原因と証拠の在り処をログに残して error に落とす
+# （eval-<n>.md が「在る」＝「判定が取れた」を保つ）。
 trinity::evaluate() {
-  local loop="$1" prompt verdict
+  local loop="$1" prompt out tmp err rc verdict
   trinity::status evaluating
   prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
 - ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
 - 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
+  out="${RUN_DIR}/eval-${loop}.md"
+  tmp="${out}.tmp"
+  err="${RUN_DIR}/evaluator-${loop}.out"
+  rc=0
   trinity::claude evaluator "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
-    > "${RUN_DIR}/evaluator-${loop}.out" 2>&1 || true
-  verdict="$(trinity::verdict_of "${RUN_DIR}/eval-${loop}.md")"
+    > "${tmp}" 2> "${err}" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    trinity::log "evaluate loop ${loop}: Evaluator が非ゼロ終了（rc=${rc}）。出力は ${tmp}・標準エラーは ${err} を参照"
+    trinity::status error
+    return 1
+  fi
+  if [ ! -s "${tmp}" ]; then
+    trinity::log "evaluate loop ${loop}: Evaluator の出力が空。標準エラーは ${err} を参照"
+    trinity::status error
+    return 1
+  fi
+  verdict="$(trinity::verdict_of "${tmp}")"
+  case "${verdict}" in
+    PASS | NEEDS_REVISION | FAIL) mv "${tmp}" "${out}" ;;
+    *)
+      trinity::log "evaluate loop ${loop}: VERDICT: が読めない（先頭行: $(head -n1 "${tmp}")）。出力は ${tmp} を参照"
+      trinity::status error
+      return 1
+      ;;
+  esac
   case "${verdict}" in
     PASS)           trinity::status passed;        return 0 ;;
     NEEDS_REVISION) trinity::status needs-revision; return 2 ;;
     FAIL)           trinity::status revising;       return 3 ;;
-    *)              trinity::status error;          return 1 ;;
   esac
 }
