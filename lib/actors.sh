@@ -70,8 +70,22 @@ trinity::claude() {
 }
 
 # trinity::verdict_of FILE — eval-*.md から VERDICT の値（PASS/NEEDS_REVISION/FAIL）を返す。
+# 各行のバッククォート・アスタリスク・見出し記号・引用記号・前後の空白を取り除いてから
+# 照合するため、モデルが判定行をどう装飾して返しても値を読める。値そのものが3値の
+# いずれかであるかは呼び出し側の判定に委ねる。
 trinity::verdict_of() {
-  awk '/^VERDICT:/{print $2; exit}' "$1" 2>/dev/null
+  awk '
+    { line = $0
+      gsub(/[`*#>]/, "", line)
+      gsub(/^[ \t]+|[ \t]+$/, "", line)
+      if (match(line, /^VERDICT:[ \t]*[A-Z_]+/)) {
+        value = substr(line, RSTART, RLENGTH)
+        sub(/^VERDICT:[ \t]*/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$1" 2>/dev/null
 }
 
 # trinity::has_report FILE — 完了レポート（空でない）の有無を判定する。
