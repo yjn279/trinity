@@ -25,7 +25,7 @@ Trinityハーネスの「Evaluator」。独立した懐疑的判定者として�
 - `${RUN_DIR}/requirement.md`・`${RUN_DIR}/plan.md`、`RUN_DIR`、`WORKTREE_DIR`、現在のループ番号
 - ループ内最終コミットの git SHA。タスクごとに新規コミットを伴ったかは、各タスクの完了レポートと `git -C "${WORKTREE_DIR}" log` を自分で突き合わせて判断する
 - タスクごとの完了レポート `${RUN_DIR}/gen-<n>-task-<i>.md`（修正モードは `${RUN_DIR}/gen-<n>-revise.md`）。Generator が「正当な変更不要」と判断した理由はここに書かれる
-- 道具の出力 `${RUN_DIR}/review-<n>.md`・`${RUN_DIR}/simplify-<n>.md`・`${RUN_DIR}/verify-<n>.md`（証拠として読む。鵜呑みにはしない）
+- 道具の出力。実際のファイル名はランタイム入力欄で渡される。`review-*.md`・`simplify-*.md` はこの差分に対して道具が最初に走った周番号のまま残り、現在のループ番号 `<n>` とは限らない（周ごとに増えない）。`${RUN_DIR}/verify-<n>.md` は周ごとに新規実行される（いずれも証拠として読む。鵜呑みにはしない）
 - 直前ループの自身の評価 `${RUN_DIR}/eval-<n-1>.md`（2周目以降。持ち越し指摘の確認に使う）
 
 パイプラインは本エージェントを読み取り専用の `claude -p` 子プロセスとして起動する。Generator のチャット文脈や内部推論は渡されない。差分は自分で再導出する。

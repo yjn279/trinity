@@ -217,36 +217,42 @@ trinity::tool_step() {
 }
 
 # trinity::tool_output NAME — RUN_DIR にある道具の出力ファイル名（review-<n>.md 等、拡張子込み）を
-# 返す。差分を書き換える道具は一度しか走らないため生存する周番号は1つに定まる。無ければ非ゼロで返る。
+# 返す。差分を書き換える道具は一度しか走らないため生存する周番号は1つに定まるが、旧版（周ごとに
+# 実行）の RUN_DIR を引き継いだ再開では複数残りうるため周番号最大のものを採る。空ファイルは
+# 未完了として扱い（trinity::has_report）、無ければ非ゼロで返る。
 trinity::tool_output() {
-  local name="$1" f
+  local name="$1" f best="" best_n=-1 n
   for f in "${RUN_DIR}"/"${name}"-*.md; do
-    [ -f "$f" ] || continue
-    printf '%s\n' "${f##*/}"
-    return 0
+    trinity::has_report "$f" || continue
+    n="${f##*/"${name}"-}"; n="${n%.md}"
+    case "$n" in *[!0-9]*) continue ;; esac
+    [ "$n" -gt "$best_n" ] && { best_n="$n"; best="$f"; }
   done
-  return 1
+  [ -n "$best" ] || return 1
+  printf '%s\n' "${best##*/}"
 }
 
-# trinity::tools LOOP — 差分を書き換える道具（/code-review --fix・/simplify）はこの差分に対して
-# まだ一度も走っていないときだけ実行し、道具の変更をコミットする。既に review-*.md／simplify-*.md
-# が残っていればその周は上書きせずスキップするため、道具が同じ逸脱を周ごとに入れ直すことがなく、
-# クラッシュ再開や再収束（redrive）を跨いでも「一度きり」が保たれる。挙動の検証（/verify）は
+# trinity::tool_once LOOP NAME PROMPT — 差分を書き換える道具1つぶんの実行判断。この差分に対して
+# name-*.md が既にあればその周は上書きせずスキップし、無ければ trinity::tool_step で実行する。
+# これにより道具が同じ逸脱を周ごとに入れ直すことがなく、クラッシュ再開や再収束（redrive）を
+# 跨いでも「一度きり」が保たれる。
+trinity::tool_once() {
+  local loop="$1" name="$2" prompt="$3"
+  if trinity::tool_output "$name" >/dev/null; then
+    trinity::log "${name}-*.md が既にある。${name} をスキップする（この差分に対して実行済み）"
+  else
+    trinity::tool_step "$loop" "$name" "$prompt"
+  fi
+}
+
+# trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
+# /code-review --fix・/simplify は trinity::tool_once で一度きりに保ち、挙動の検証（/verify）は
 # 証拠が周ごとに要るため毎周実行する。
 trinity::tools() {
-  local loop="$1" base
+  local loop="$1"
   trinity::status reviewing
-  if trinity::tool_output review >/dev/null; then
-    trinity::log "review-*.md が既にある。review をスキップする（この差分に対して実行済み）"
-  else
-    base="$(trinity::base)"
-    trinity::tool_step "$loop" review "/code-review --fix ${base}..HEAD"
-  fi
-  if trinity::tool_output simplify >/dev/null; then
-    trinity::log "simplify-*.md が既にある。simplify をスキップする（この差分に対して実行済み）"
-  else
-    trinity::tool_step "$loop" simplify "/simplify"
-  fi
+  trinity::tool_once "$loop" review "/code-review --fix $(trinity::base)..HEAD"
+  trinity::tool_once "$loop" simplify "/simplify"
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
@@ -265,8 +271,16 @@ trinity::tools() {
 trinity::evaluate() {
   local loop="$1" prompt out tmp err rc verdict review_out simplify_out
   trinity::status evaluating
-  review_out="$(trinity::tool_output review)"
-  simplify_out="$(trinity::tool_output simplify)"
+  review_out="$(trinity::tool_output review)" || {
+    trinity::log "evaluate loop ${loop}: review-*.md が見つからない（trinity::tools が完了していない）"
+    trinity::status error
+    return 1
+  }
+  simplify_out="$(trinity::tool_output simplify)" || {
+    trinity::log "evaluate loop ${loop}: simplify-*.md が見つからない（trinity::tools が完了していない）"
+    trinity::status error
+    return 1
+  }
   prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
 - ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
 - 道具の出力: ${review_out} / ${simplify_out} / verify-${loop}.md"
@@ -296,8 +310,8 @@ trinity::evaluate() {
       ;;
   esac
   case "${verdict}" in
-    PASS)           trinity::status passed;        return 0 ;;
+    PASS)           trinity::status passed;         return 0 ;;
     NEEDS_REVISION) trinity::status needs-revision; return 2 ;;
-    FAIL)           trinity::status revising;       return 3 ;;
+    FAIL)           trinity::status revising;        return 3 ;;
   esac
 }
