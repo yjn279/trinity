@@ -17,7 +17,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `README.md` | 設計と確定仕様 |
 | `commands/run.md` | Orchestrator の手順（設計確認・実行・PR・受け入れ・後片付け） |
 | `agents/<role>.md` | 各アクターのふるまいとモデル（frontmatter の `model:` をシェルが読む） |
-| `scripts/loop.sh` | 収束ループ。段ごとの成果物・状態・再開の仕組みはここのコメントを読む |
+| `scripts/loop.sh` | 収束ループの制御（状態・再開・pid）。仕組みはここのコメントを読む |
+| `scripts/stages.sh` | 収束ループの各段（計画・実装・修正・道具・評価）。`loop.sh` が source する |
 | `scripts/guard.sh` | 役割境界を課すフック。許否の単一の正 |
 | `scripts/test-guard.sh` | ガードの許否テスト |
 

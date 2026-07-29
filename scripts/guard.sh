@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 # scripts/guard.sh — アクターの役割境界を課す PreToolUse フック。許否の単一の正。
-#
-# stdin のフック JSON から tool_name / tool_input を読み、TRINITY_ROLE（planner / generator /
-# evaluator）と RUN_DIR に応じて deny の JSON を返す（何も返さなければ許可）。git は許可
-# サブコマンドの一覧で判定し（deny-by-default）、設定の書き込み・-c・git を含む複合コマンド
-# （引用符の外の演算子・コマンド置換・行継続）は一覧に依らず deny する。
+# stdin のフック JSON から tool_name / tool_input を読み、TRINITY_ROLE と RUN_DIR に応じて deny の
+# JSON を返す（何も返さなければ許可）。git は許可サブコマンドの一覧で判定し（deny-by-default）、
+# 設定（config・-c）と git を含む複合コマンドは一覧に依らず deny する。
 set -euo pipefail
 
 TRINITY_ROLE="${TRINITY_ROLE:-}"
-
-READ_GIT="log|show|diff|status|rev-parse|blame|cat-file|ls-files|ls-tree|for-each-ref|rev-list|describe|shortlog|show-ref|name-rev|grep|var|help|version|config"
+READ_GIT="log|show|diff|status|rev-parse|blame|cat-file|ls-files|ls-tree|for-each-ref|rev-list|describe|shortlog|show-ref|name-rev|grep|var|help|version"
 WRITE_GIT="add|checkout|switch|restore|reset|revert|cherry-pick|merge|rebase|stash|mv|rm|clean|apply|branch|tag|notes|commit"
 
 deny() {
@@ -27,10 +24,8 @@ field() {
   printf '%s' "$raw"
 }
 
-in_list() { case "|$2|" in *"|$1|"*) return 0 ;; esac; return 1; }
-
-# Write / Edit の書き込み範囲。evaluator は全面拒否、planner は RUN_DIR 内のみ、generator は
-# 制約なし。planner のパスは正規化せず、境界を跨ぎうる「..」を一律 deny に倒す（fail-closed）。
+# Write / Edit の範囲。evaluator は全面拒否、planner は RUN_DIR 内のみ（境界を跨ぎうる「..」は
+# パス正規化の代わりに一律 deny）、generator は制約なし。
 check_write() {
   case "${TRINITY_ROLE}" in
     generator) ;;
@@ -45,23 +40,10 @@ check_write() {
   esac
 }
 
-# git config が読み取り専用形（--get 系・--list）かどうか。書き込み系フラグ、または
-# 読み取りフラグ無しの位置引数形（alias 定義など）は false。
-config_is_read() {
-  local t read=1
-  for t in "$@"; do
-    case "$t" in
-      --get | --get-all | --get-regexp | --get-urlmatch | --list | -l) read=0 ;;
-      --add | --unset* | --replace-all | --rename-section | --remove-section | --edit | -e) return 1 ;;
-    esac
-  done
-  return "$read"
-}
-
-# git の引数列を役割の一覧で判定する。-c は設定注入（core.pager 等のシェル実行）を許すため
-# 一律 deny し、-C 等のリポジトリ指定フラグは値ごと読み飛ばしてサブコマンドを特定する。
+# git の引数列を役割の一覧で判定する。設定は evasion 経路（alias 定義・core.pager 等の注入）の
+# ため config・-c とも一律 deny し、-C 等のリポジトリ指定フラグは値ごと読み飛ばす。
 check_git() {
-  local sub="" i=0 t args=("$@") rest=()
+  local sub="" i=0 t allowed args=("$@") rest=()
   while [ "$i" -lt "${#args[@]}" ]; do
     case "${args[$i]}" in
       -c) deny "-c によるgit設定の一時上書きは実行できない" ;;
@@ -71,22 +53,21 @@ check_git() {
     esac
   done
   [ -z "$sub" ] && return 0
-  local allowed="${READ_GIT}"
+  allowed="${READ_GIT}"
   [ "${TRINITY_ROLE}" = generator ] && allowed="${READ_GIT}|${WRITE_GIT}"
-  in_list "$sub" "$allowed" || deny "role=${TRINITY_ROLE} は git ${sub} を実行できない"
-  case "$sub" in
-    config)
-      config_is_read "${rest[@]+"${rest[@]}"}" || deny "git config の書き込み（alias 定義を含む）は実行できない" ;;
-    commit)
-      # --amend / --no-verify を deny する。-n を含む短縮フラグ束も丸ごと deny に倒す（fail-closed）。
-      for t in "${rest[@]+"${rest[@]}"}"; do
-        case "$t" in
-          --amend | --no-verify) deny "git commit ${t} は実行できない" ;;
-          --*) ;;
-          -*n*) deny "git commit の -n（--no-verify）を含むフラグは実行できない" ;;
-        esac
-      done ;;
+  case "|${allowed}|" in
+    *"|${sub}|"*) ;;
+    *) deny "role=${TRINITY_ROLE} は git ${sub} を実行できない" ;;
   esac
+  # commit は --amend / --no-verify を deny する。-n を含む短縮フラグ束も丸ごと deny に倒す。
+  [ "$sub" = commit ] && for t in "${rest[@]+"${rest[@]}"}"; do
+    case "$t" in
+      --amend | --no-verify) deny "git commit ${t} は実行できない" ;;
+      --*) ;;
+      -*n*) deny "git commit の -n（--no-verify）を含むフラグは実行できない" ;;
+    esac
+  done
+  return 0
 }
 
 # command を引用符を考慮して語列 WORDS に分解し、引用の外の複合演算子（& | ; ( ) ` と
@@ -105,10 +86,8 @@ scan() {
       '\')
         if [ "${s:$((i + 1)):1}" = $'\n' ]; then OPS=1; else cur+="${s:$((i + 1)):1}" have=1; fi
         i=$((i + 2)) ;;
-      '&' | '|' | ';' | '(' | ')' | '`')
-        OPS=1; [ "$have" = 1 ] && WORDS+=("$cur"); cur="" have=0; i=$((i + 1)) ;;
-      ' ' | $'\t' | $'\n' | $'\r')
-        [ "$have" = 1 ] && WORDS+=("$cur"); cur="" have=0; i=$((i + 1)) ;;
+      '&' | '|' | ';' | '(' | ')' | '`') OPS=1; [ "$have" = 1 ] && WORDS+=("$cur"); cur="" have=0; i=$((i + 1)) ;;
+      ' ' | $'\t' | $'\n' | $'\r') [ "$have" = 1 ] && WORDS+=("$cur"); cur="" have=0; i=$((i + 1)) ;;
       *) cur+="$c" have=1; i=$((i + 1)) ;;
     esac
   done
