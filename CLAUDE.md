@@ -33,7 +33,7 @@ Trinity の開発では以下のスキルを依存として用いる。仕様・
 
 frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。この境界は `lib/guard.sh` の PreToolUse フック一本（単層）で enforce する。Bash tool の `command` から git を role 別の allowlist（deny-by-default）で判定し（Planner・Evaluator は読み取り専用サブコマンド、Generator はそれに worktree 内の状態変更を加えたもの）、状態を変える evasion は `config` 書き込みと `-c` の deny で閉じる。git を含む複合コマンド（演算子・コマンド置換・行継続）は安全に切り出せないため deny し、単一の git コマンドへ分けさせる。Write/Edit（および NotebookEdit）は書き込み範囲を判定する。`trinity::claude` が per-actor に注入し、frontmatter の `tools:` はあくまで意図表現である。
 
-機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。道具の変更が `requirement.md` と食い違うときの判断は `agents/evaluator.md` の Tool Deviation を正とする。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md`・`eval-<n>.md`）から完了済みの段・タスク・道具をスキップし、中断点から再開する。
+機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。差分を書き換える `/code-review --fix`・`/simplify` はその差分につき一度だけ走り、挙動を検証する `/verify` は周ごとに走る。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。道具の変更が `requirement.md` と食い違うときは常に `NEEDS_REVISION` とし、判断基準は `agents/evaluator.md` の Tool Deviation を正とする。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md`・`eval-<n>.md`）から完了済みの段・タスク・道具をスキップし、中断点から再開する。
 
 アクターは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。`claude -p` の別プロセス境界がこの間接化を強制し、Evaluator の独立性を担保する。アクターをメイン会話のネイティブ subagent ではなく `claude -p` の子プロセスとして起動するのには、この独立性のほかに2つの構造的な理由がある。第一に、ネイティブ subagent は入れ子のサブエージェントを起動できないが、`claude -p` の子はフルの Claude Code セッションなので Planner・Generator・Evaluator が自分の作業の中でさらにサブエージェントを呼べる。第二に、long-running 前提のバックグラウンド実行が、メイン会話に張り付かない子プロセスだからこそ成り立つ。Orchestrator は段と段のあいだでコードを読み書きせず、`status`・`ask/` のファイルだけを介して背景パイプラインと通信する。`backlog.tsv` はパイプラインとの通信チャネルではなく、Orchestrator 自身が Issue 集合を書き残し読み返す耐久インデックスである。通信の経路を以下に示す。
 
@@ -43,7 +43,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
 | Generator | worktree 内のコミット(SHA、正当な変更不要のときは無し)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
 | 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |
-| Evaluator | `${RUN_DIR}/eval-<n>.md`（先頭行 `VERDICT:`） | Planner（次ループ）・パイプライン |
+| Evaluator | 判定レポート本文（先頭行 `VERDICT:`）を `claude -p` の標準出力として返す。ハーネス（`trinity::evaluate`）が `${RUN_DIR}/eval-<n>.md` として原子的に保存する | Planner（次ループ）・パイプライン |
 | パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
 | Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
 | Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト。`requirement.md` へ一度だけ取り込まれ、新しい PASS または終端 failed まで耐久状態として残る） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
@@ -64,7 +64,7 @@ frontmatter の `model:` と `tools:` は設計上の意味を持つため、安
 | 受け渡しはファイルチャネル | `backlog.tsv` は Orchestrator が Issue ごとの slug・worktree・branch・title を書き残す耐久インデックスであり、fan-out は Orchestrator が backlog の各行につき `loop` を1本ずつ起動して行う。確認は `ask/q`・`ask/a`、進捗は `status`、修正要望の再収束は `redrive` の各ファイルで橋渡しする。 |
 | AskUserQuestion はフォアグラウンド限定 | `AskUserQuestion` を呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` を surface し、パイプラインが `needs-input` でブロックして Orchestrator の運搬を待つ。 |
 | ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・`backlog.tsv`・各ランの `plan.md`・`tasks.tsv`・ループごとのスナップショット `plan-*.md`・`eval-*.md`・`gen-*.md`・`review-*.md`・`simplify-*.md`・`verify-*.md`・`status`・`planner-*.out`・`gen-*.out`・`evaluator-*.out`・`pipeline.out`）はデバッグのためクリーンアップで削除しない。 |
-| 3値判定 | Evaluator は `eval-<n>.md` 先頭行 `VERDICT:` に `PASS` ・ `NEEDS_REVISION` ・ `FAIL` を返し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。道具の変更が `requirement.md` と食い違うときも新しい判定値は増やさず、この3値に振り分ける（判断基準は `agents/evaluator.md` の Tool Deviation を正とする）。 |
+| 3値判定 | Evaluator は判定レポート本文の先頭行に `VERDICT:` として `PASS` ・ `NEEDS_REVISION` ・ `FAIL` のいずれかを返す（自分ではファイルを書かない）。ハーネス（`trinity::evaluate`）がこれを `${RUN_DIR}/eval-<n>.md` として原子的に保存し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。道具パスの逸脱は常に `NEEDS_REVISION` に振り分け、新しい判定値は増やさない（判断基準は `agents/evaluator.md` の Tool Deviation を正とする）。 |
 
 ## Conventions
 
