@@ -216,13 +216,37 @@ trinity::tool_step() {
   mv "${tmp}" "${out}"
 }
 
-# trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
-# 道具ごとに trinity::tool_step でチェックポイントするため、再開時は済んだ道具から先に進む。
+# trinity::tool_output NAME — RUN_DIR にある道具の出力ファイル名（review-<n>.md 等、拡張子込み）を
+# 返す。差分を書き換える道具は一度しか走らないため生存する周番号は1つに定まる。無ければ非ゼロで返る。
+trinity::tool_output() {
+  local name="$1" f
+  for f in "${RUN_DIR}"/"${name}"-*.md; do
+    [ -f "$f" ] || continue
+    printf '%s\n' "${f##*/}"
+    return 0
+  done
+  return 1
+}
+
+# trinity::tools LOOP — 差分を書き換える道具（/code-review --fix・/simplify）はこの差分に対して
+# まだ一度も走っていないときだけ実行し、道具の変更をコミットする。既に review-*.md／simplify-*.md
+# が残っていればその周は上書きせずスキップするため、道具が同じ逸脱を周ごとに入れ直すことがなく、
+# クラッシュ再開や再収束（redrive）を跨いでも「一度きり」が保たれる。挙動の検証（/verify）は
+# 証拠が周ごとに要るため毎周実行する。
 trinity::tools() {
-  local loop="$1" base; base="$(trinity::base)"
+  local loop="$1" base
   trinity::status reviewing
-  trinity::tool_step "$loop" review "/code-review --fix ${base}..HEAD"
-  trinity::tool_step "$loop" simplify "/simplify"
+  if trinity::tool_output review >/dev/null; then
+    trinity::log "review-*.md が既にある。review をスキップする（この差分に対して実行済み）"
+  else
+    base="$(trinity::base)"
+    trinity::tool_step "$loop" review "/code-review --fix ${base}..HEAD"
+  fi
+  if trinity::tool_output simplify >/dev/null; then
+    trinity::log "simplify-*.md が既にある。simplify をスキップする（この差分に対して実行済み）"
+  else
+    trinity::tool_step "$loop" simplify "/simplify"
+  fi
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
@@ -239,11 +263,13 @@ trinity::tools() {
 # のいずれでも改名せず原因と証拠の在り処をログに残して error に落とす
 # （eval-<n>.md が「在る」＝「判定が取れた」を保つ）。
 trinity::evaluate() {
-  local loop="$1" prompt out tmp err rc verdict
+  local loop="$1" prompt out tmp err rc verdict review_out simplify_out
   trinity::status evaluating
+  review_out="$(trinity::tool_output review)"
+  simplify_out="$(trinity::tool_output simplify)"
   prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
 - ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
-- 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
+- 道具の出力: ${review_out} / ${simplify_out} / verify-${loop}.md"
   out="${RUN_DIR}/eval-${loop}.md"
   tmp="${out}.tmp"
   err="${RUN_DIR}/evaluator-${loop}.out"
