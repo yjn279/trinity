@@ -37,4 +37,4 @@
 | アクターは `claude -p` 経由 | 振る舞いの単一の正は `agents/<role>.md`。`lib/actors.sh` は本文を指示として注入する |
 | worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}"` で操作し、`cd` で代替しない |
 | AskUserQuestion はフォアグラウンド限定 | 呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` で差し戻す |
-| 3値判定 | Evaluator は `eval-<n>.md` 先頭行に `VERDICT: PASS|NEEDS_REVISION|FAIL` を返し、ループ離脱は `PASS` だけで決まる |
+| 3値判定 | Evaluator は判定レポート本文の先頭行に `VERDICT: PASS|NEEDS_REVISION|FAIL` を返す（自分ではファイルを書かない）。ハーネスがこれを `eval-<n>.md` として保存し、ループ離脱は `PASS` だけで決まる |
