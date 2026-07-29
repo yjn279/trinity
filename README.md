@@ -1,134 +1,97 @@
 # Trinity
 
-Trinity は、Anthropic の Planner / Generator / Evaluator パターンを3つのサブエージェントとして実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、マージ候補の選択・課題起票・クリーンアップをユーザーに確認しながら進める。
+Trinity は、計画・実装・評価を分業する3つのエージェント（Planner・Generator・Evaluator）で、長時間のエンジニアリングタスクを走り切る Claude Code プラグインである。`/trinity:run <要件>` で起動すると、隔離された worktree の中で Generator が実装してコミットし、Evaluator が本番投入できる品質と認めるまで反復する。承認後は Orchestrator が PR を作成し、マージと後片付けまで進める。
 
-小さい具体的タスクから大きな抽象的タスクまで、あらゆるエンジニアリングタスクを同じひとつの仕組みに落とす。ユーザーが負うのはバックログの管理と、成果を受け入れるかの判断だけになる。フォアグラウンドの Orchestrator は自由形式の要件解釈とユーザー対話に専念し、Issue ごとの収束ループ（`Plan → Generator → 道具 → Evaluator`）はシェルへ機械化して背景で回す。機械が下せる8割——実行検証・差分レビュー・整理——は組み込みコマンド `/verify`・`/code-review --fix`・`/simplify` を Evaluator の道具として委ねる。差分の機械的な掃除（`/code-review --fix`・`/simplify`）はその差分につき一度だけ行い、挙動の検証（`/verify`）は周ごとに行う。Evaluator は削れない2割の判断にだけ希少な判断力を注ぐ。
+ユーザーが関わるのは最初と最後だけである。起動直後に設計の分岐を確定し、最後に PR の受け入れを判断する。その間に確認は無く、長時間完全に自律で動く。導入すれば設定なしで使える。
 
-## Role Separation
+## 役割
 
-計画・実装・評価を1つのコンテキストに同居させると、文脈が膨らむほどドリフトが起きる。実装の途中で計画が書き換わり、評価者が自分の作品を甘く見て、探索のトークンが実装のトークンを圧迫する。Trinity は役割を3つのサブエージェントに分け、それぞれに固有のシステムプロンプトと新鮮なコンテキストを与える。これにより各段の集中と、評価者の独立した懐疑性を保つ。
+計画・実装・評価を1つの文脈に同居させると、文脈が膨らむほど計画が実装の都合で書き換わり、評価者が自分の作品に甘くなる。Trinity は役割を分け、それぞれに固有の指示と新鮮な文脈を与える。
 
-Evaluator の独立性は、ファイルベースの通信によって構造的に強制される。Evaluator は `plan.md` と git diff だけを読み、Generator のチャットコンテキストや内部推論は読まない。差分は自分で再導出し、検証チェーンも自分で再実行する。これにより「自分の書いたコードに甘くなる」という単一エージェントの典型的な失敗モードが、設計上発生し得なくなる。パイプラインは各アクターを headless な `claude -p` の別プロセスとして起動するため、この間接化はプロセス境界として強制される。
+| 役割 | モデル | 担当 |
+| :-- | :-- | :-- |
+| Orchestrator | メイン会話 | 要件の解釈・設計の確定・収束ループの起動と監視・PR 作成・受け入れ確認・後片付け |
+| Planner | opus | 要件を、受け入れ基準付きの計画と機械可読なタスク一覧に展開する |
+| Generator | sonnet | 割り当てられたタスクを worktree の中で実装し、検証を通してコミットする |
+| Evaluator | sonnet | コミットを4軸で独立に評価し、3値の判定を返す |
 
-## Evaluation Axes
+Evaluator の独立性は、ファイル渡しの通信で構造的に強制される。各アクターは headless な `claude -p` の別プロセスとして起動され、互いのチャット文脈を見ない。Evaluator は計画と git の差分だけを読み、検証も自分で再実行する。「自分の書いたコードに甘くなる」という単一エージェントの典型的な失敗が、設計上起こらない。
 
-組み込みの `/code-review` は差分のバグと整理を自動で見るが、「要件を満たせているか」「デザインは美しいか」「コードは美しいか」「そもそも要件が正しいか」という総合判断はしない。この4軸は機械に委ねられない判断であり、Evaluator がこれを担う。組み込みコマンドは Evaluator の置換ではなく、その**道具**である。
+## 評価
+
+機械的に直せる指摘は、評価の前段で道具（`/code-review --fix`・`/simplify`）が自動で修正する。道具は差分につき一度だけ走り、Evaluator はその結果を証拠として読んだうえで、機械に委ねられない次の4軸だけを判断する。
 
 | 軸 | 問い |
 | :-- | :-- |
 | 要件適合 | 受け入れ基準を実装が満たしているか |
 | デザインの美 | UI・API・データモデルが素直で一貫しているか |
-| コードの美 | 命名・構造・抽象が周囲に馴染み読み手に易しいか |
+| コードの美 | 命名・構造・抽象が周囲に馴染み、読み手に易しいか |
 | 要件妥当性 | そもそもの要件・計画が正しいか |
 
-## Architecture
+## 流れ
 
-オーケストレーターとサブエージェント3者で構成される。Orchestrator はメイン会話の Claude で、コードには触れず各段の起動と統合フローだけを担う。各アクターの役割を以下に示す。
-
-| アクター | モデル | 役割 |
-| :-- | :-- | :-- |
-| Orchestrator | メイン会話 | 要件解釈・ユーザー対話・環境構築・背景パイプラインの dispatch と監視・PR 作成・確認・クリーンアップ |
-| Planner | opus | 要件を受け入れ基準付きの `plan.md` と機械可読な `tasks.tsv` に展開する（Issue ごと） |
-| Generator | sonnet | 割り当てタスクを worktree 内で実装し、検証を通してコミットする（既存コードが要件を満たし加えるべき差分が無ければ、コミットせず理由をレポートに残す） |
-| Evaluator | sonnet | コミットを4軸で独立・読み取り専用に評価し、3値判定を書く |
-
-内側ループの制御フローはシェルへ機械化する。Orchestrator は内側ループを駆動せず、背景パイプラインへ dispatch して監視に徹する。
-
-| 機構 | 実体 | 役割 |
-| :-- | :-- | :-- |
-| `bin/trinity loop` | シェル（サブコマンド） | 1 Issue の `Plan → Generator → 道具 → Evaluator` 収束ループ。Orchestrator がハーネス追跡の背景タスクとして直接起動する |
-| `lib/actors.sh` | シェル | 各アクターを `claude -p` の子プロセスとして起動するステートレスな呼び出し層 |
-
-agent 定義は `agents/` に、ハーネスは `bin/trinity`（単一の実行ファイル）と `lib/actors.sh` に、Orchestrator の手順は `commands/run.md` に置く。アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を指示として注入する。ランの成果物（`plan.md`・`tasks.tsv`・`eval-*.md`・`gen-*.md`・`review-*.md`・`status`・`trinity.log` 等）は対象プロジェクトの `.trinity/<session>/<slug>/` に出力され、`backlog.tsv` は `.trinity/<session>/` に置かれる。worktree は `git-flow` スキルが `.trinity/` の外に切り出す。Pull Request・後片付けといった git 運用も同様に `git-flow` スキルに委譲する。確定済みの仕様は `docs/requirements.md` に記す。
-
-## Processing Units
-
-Trinity が計画・実装を扱う処理単位を、粒度の大きい順に定義する。
-
-| 用語 | 定義 |
-| :-- | :-- |
-| セッション | `/trinity:run` の起動から、PR 作成・マージ候補の確認・改善提案（課題起票）・クリーンアップまでの、コマンド1回の実行全体。複数のパイプラインを束ねる最上位の単位 |
-| パイプライン | 1つの Worktree で実行される処理系列。ループを Production-Ready な品質水準に達するまで繰り返し、1つの PR を作成するまでの流れ |
-| ループ | パイプライン内で繰り返される `Plan → Generator → 道具 → Evaluator` の1周。差分を書き換える道具（`/code-review --fix`・`/simplify`）はその差分につき一度だけ、挙動を検証する `/verify` は周ごとに走り、Evaluator の3値判定が継続と離脱を決める |
-| タスク | 各 Generator が実施する、独立して動作し単独で検証可能な最小実装単位。既存コードが要件をすでに満たしていれば、コミットせず理由をレポートに残すことも正当な完了とする |
-
-## Processing Flow
-
-全体像を図に示す。Orchestrator は起動可能な各 Issue の `trinity loop` をハーネス追跡の背景タスクとして直接起動し、各 Issue の `status`・`ask/q` をターンを跨いでポーリングして進捗を追う。各ループは差分を書き換える道具をその差分につき一度だけ走らせ、挙動の検証は周ごとに行った上で、Evaluator の3値判定が継続と離脱を決める。
+Orchestrator が作業単位ごとにブランチと worktree を切り出し、収束ループを1本ずつ直列に回す。ループの制御はシェル（`bin/trinity loop`）に機械化されており、Orchestrator は起動と監視だけを行う。
 
 ```mermaid
 flowchart LR
-  Req["要件 / Issues"] --> Run["/trinity:run<br/>Orchestrator"]
-
-  Run -->|trinity loop（背景）| WT1
-  Run --> WT2
-  Run --> WTN
-
-  subgraph WT1["Worktree 1（trinity loop）"]
+  requirement[要件] --> orchestrator[Orchestrator]
+  orchestrator --> plan
+  subgraph loop[収束ループ]
     direction TB
-    Plan["Plan"]
-    Gen["Generator 1..M"]
-    Tools["道具<br/>/code-review --fix<br/>/simplify・/verify"]
-    Eval["Evaluator（4軸）"]
-    Plan --> Gen --> Tools --> Eval
-    Eval -->|NEEDS_REVISION| Plan
-    Eval -->|FAIL| Gen
+    plan[計画] --> generate[実装]
+    generate --> tools[道具]
+    tools --> evaluate[評価]
+    evaluate -->|再計画| plan
+    evaluate -->|修正| generate
   end
-
-  WT2["Worktree 2"]
-  WTN["Worktree N"]
-
-  Eval -->|PASS| PR["Pull Requests"]
-  WT2 --> PR
-  WTN --> PR
+  evaluate -->|合格| pullRequest[PR]
 ```
 
-判定ごとの動作を以下に示す。ループの離脱は Evaluator の `PASS` だけで決まる（道具が機械的な指摘を前段で自動修正済みのため）。
+Evaluator の判定がループの継続と離脱を決める。離脱は `PASS` だけで決まる。
 
 | 判定 | 動作 |
 | :-- | :-- |
 | `PASS` | 4軸すべてを満たす。ループを離脱して PR 作成へ進む |
-| `NEEDS_REVISION` | 計画・要件が誤っている、または道具（`/code-review --fix`・`/simplify`）の変更が `requirement.md` と食い違う。道具パスの逸脱は常にここへ来る。Planner が再計画する（要件自体の疑いはユーザーに差し戻し、道具が原因なら追認・回復のどちらも Planner が自ら引き取る。詳細は次段落） |
-| `FAIL` | 既存計画の範囲内で Generator が修正する |
+| `NEEDS_REVISION` | 計画・要件が誤っている、または道具の変更が要件の記述と食い違う。Planner が要件の更新か挙動の回復かを自分で判断し、再計画する |
+| `FAIL` | 計画は妥当。既存計画の範囲内で Generator が修正する |
 
-道具の変更が `requirement.md` と食い違うときの判断基準は `agents/evaluator.md` の Tool Deviation を単一の正とする。追認（`requirement.md` の更新）・回復（復旧タスクの追加）のいずれも Planner・Evaluator 間で完結し、人間へは戻さない。
+## 仕様
 
-`PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。PR 確定後の確認は原則まとめて（1回の `AskUserQuestion` コールで）行い、修正要望が入った場合はその Issue の後処理を再収束後に改めて確認する。手続きの詳細は `commands/run.md` を単一の正とする。計画中に設計分岐が見つかった場合も同様に、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
+確定している仕様を以下に示す。ここに無いものは実装の裁量である。
 
-## Prerequisites
+| 仕様 | 内容 |
+| :-- | :-- |
+| 処理フロー | 3アクター（Planner・Generator・Evaluator）と道具（`/code-review --fix`・`/simplify`）による検証で、1つの収束ループを回す |
+| worktree 実行 | 作業は `git-flow` スキルで切り出した worktree の中で行う。複数の作業単位は直列に実行する |
+| 確認 | 設計は起動時にフォアグラウンドの Orchestrator が `AskUserQuestion` で確定する。実行中はユーザーに確認しない |
+| 子プロセス起動 | Planner・Generator・Evaluator は、作業のなかでさらにサブエージェントを呼べるよう、`claude -p` の子プロセスとして起動される |
+| 柔軟性 | 複数 Issue・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する |
+| PR マージ | Git Issue が提示された場合は Issue ごとに独立した PR を作成し、`AskUserQuestion` で提示した候補のうちユーザーが選択したものをマージする |
+| 課題起票 | 対象リポジトリと Trinity 本体それぞれの改善課題を `AskUserQuestion` で起票提案し、選択された課題を Issue として登録する |
+| 再開 | 実行が中断（使用量上限・レートリミット・障害など）しても、到達済みの工程をやり直さず中断点から再開する |
+| 後片付け | マージと課題起票の完了後、マージされた作業単位の環境（ブランチ・worktree・ラン成果物）をリモートを含めて削除する。マージされなかった単位はすべて残す |
 
-Trinity を動かすには、以下のスキル／コマンドが必要である。ハーネスのシェルスクリプト（`bin/`）は実行可能ビットが立っている前提で、`bash` と `git`、`claude` CLI が PATH にあること。
+## 前提
 
-- [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow) — worktree の作成・ブランチ管理・PR 統合を担うスキル。Orchestrator はこのスキルに git 運用を委譲する。
-- [code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review) — `/code-review --fix` を Evaluator の道具として、差分のバグと整理を自動修正するために使う。
-- `/simplify`・`/verify` — それぞれ整理の適用、挙動の検証を担う Evaluator の道具。Claude Code の組み込みコマンド。
+`bash`・`git`・`claude` CLI が PATH にあり、次のスキルとコマンドが導入されていること。未導入のものは `/trinity:run` の起動時に自動で検出し、確認なしでセットアップされる（`~/.claude` への変更を含む）。
 
-未導入のものがある場合、Trinity は `/trinity:run` 起動時に自動で検出し、確認なしでセットアップを実施する（`~/.claude` への変更を含む）。
+- [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow) — worktree の作成・ブランチ管理・PR 統合を担う。
+- [code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review) — `/code-review --fix` として差分のバグと整理を自動修正する。
+- `/simplify` — 整理を適用する Claude Code の組み込みコマンド。
 
-現状のターゲットは Claude（`claude -p`）。各アクターの呼び出しは `lib/actors.sh` に閉じており、別エージェント CLI へ寄せる場合の差し替え境界もここになる。
+## 使い方
 
-## Usage
-
-代表的な呼び出しを以下に示す。
+要件は自由形式の文でも Issue 番号でもよい。
 
 ```shell
 /trinity:run ユーザー設定ページにテーマトグルを追加する。
 /trinity:run 認証モジュールを JWT からセッション Cookie に移行する。
-```
-
-複数 Issue を同時に指定できる。Orchestrator が要件から依存関係・並列可否を判断し、いま起動できる Issue だけをシェルに渡して並列に走らせる。先行の完了を待つ後続 Issue は、先行が終端に達してから追いかける。単発 Issue のことも、そもそも Issue として切らないことも、Trinity 実施後にそのまま修正に入ることもある。いずれの場合も各 Issue は独立した PR として残し、PR 作成後にユーザーが選択したものだけをマージする。
-
-```shell
 /trinity:run #12 #15 #20
 ```
 
-`/trinity:run` を起動した時点で、worktree 作成・ブランチ push・PR 作成までの許可を出したものとして扱う。マージ候補・課題起票・クリーンアップ許可の確認は前述の終盤確認フローで行う。API 課金エラーやレートリミットで途中停止した場合は、作業環境と `.trinity/<session>/` が残っていれば、未起動・停止した各 Issue の `loop` を同じ形（ハーネス追跡の背景タスク）で再起動すればよく、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md`・`eval-<n>.md`）から完了済みの段・タスク・道具をスキップして中断点から再開する。
+複数 Issue を渡すと、Issue ごとに独立したブランチ・worktree・PR を作り、1本ずつ直列に処理する。途中で停止した場合は、同じセッションの作業環境が残っていれば再度起動するだけで中断点から再開する。
 
-## Release
-
-詳細は [`docs/release.md`](docs/release.md) を参照する。
-
-## References
+## 参考
 
 - Anthropic「Harness design for long-running apps」 https://www.anthropic.com/engineering/harness-design-long-running-apps
 - Qiita「@nogataka 氏の解説記事」 https://qiita.com/nogataka/items/efe8eb9df612d2211221

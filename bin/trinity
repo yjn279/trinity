@@ -1,191 +1,404 @@
 #!/usr/bin/env bash
-# bin/trinity — Trinity シェルハーネス唯一の実行ファイル。
+# bin/trinity — Trinity の実行ファイル。1つの作業単位の収束ループを回す。
 #
-# サブコマンド:
-#   loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
-#       Plan → Generate → 道具 → Evaluate を最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。
-#       起動時に自身の PID を RUN_DIR/pid に原子的に主張する。確認が要るときは RUN_DIR/ask/q を
-#       書いて needs-input でブロックする。再起動時は RUN_DIR の既存成果物から中断点を
-#       判定して再開する。RUN_DIR/redrive があれば修正要望を requirement.md に一度だけ
-#       取り込み、最大 eval 番号 + 1 から plan モードで、その開始ループから TRINITY_MAX_LOOPS
-#       回ぶんの予算で再収束する。マーカーは新しい PASS 到達時と終端 failed 到達時にのみ
-#       消し、再開を跨いでも再収束が未完なら残り続ける。
+# 使い方: trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>
+#   計画 → 実装 → 道具 → 評価 を、評価が PASS を返すまで最大 TRINITY_MAX_LOOPS 回
+#   （既定 5）反復する。各段の成果物を RUN_DIR に残し、再起動時はそこから中断点を
+#   判定して完了済みの段を飛ばす。RUN_DIR/redrive があれば修正要望を requirement.md に
+#   一度だけ取り込み、新しい予算で再収束する。
 
 set -euo pipefail
 
 TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export TRINITY_ROOT
 
-[ "${1:-}" = loop ] || {
-  printf '使い方:\n  trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>\n' >&2
+[ "${1:-}" = loop ] && [ $# -ge 4 ] || {
+  printf '使い方: trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>\n' >&2
   exit 1
 }
-shift
+RUN_DIR="$2" WORKTREE_DIR="$3" BRANCH="$4"
+export RUN_DIR WORKTREE_DIR BRANCH
+: "${TRINITY_MAX_LOOPS:=5}"
 
-# --- loop — 1 Issue の収束ループ -------------------------------------------
-loop_main() {
-  local RUN_DIR WORKTREE_DIR BRANCH
-  RUN_DIR="${1:?usage: trinity loop <RUN_DIR> <WORKTREE_DIR> <BRANCH>}"
-  WORKTREE_DIR="${2:?WORKTREE_DIR required}"
-  BRANCH="${3:?BRANCH required}"
-  export RUN_DIR WORKTREE_DIR BRANCH
+mkdir -p "${RUN_DIR}"
 
-  mkdir -p "${RUN_DIR}/ask"
-  # shellcheck source=lib/actors.sh
-  . "${TRINITY_ROOT}/lib/actors.sh"
+# --- 共通 ---------------------------------------------------------------------
 
-  : "${TRINITY_MAX_LOOPS:=5}"
-
-  # pid を原子的に主張する（O_EXCL）。既存かつ生存していれば多重起動として何もせず終わる。
-  # 死んでいれば前回のクラッシュ跡（stale）として削除し、同じ O_EXCL で再主張を試みる。
-  # 再主張が失敗したら他プロセスが同時に引き継いだということなので、自分は退く。
-  # 書き込み自体が失敗した（ディスク・権限の異常）場合は主張の競合と区別し、握りつぶさず失敗させる。
-  loop::claim_pid() {
-    ( set -o noclobber; printf '%s\n' "$$" > "${RUN_DIR}/pid" ) 2>/dev/null
-  }
-  loop::assert_pid_written() {
-    trinity::has_report "${RUN_DIR}/pid" || { trinity::log "pid ファイルの作成に失敗した"; exit 1; }
-  }
-  if ! loop::claim_pid; then
-    loop::assert_pid_written
-    local existing_pid
-    IFS= read -r existing_pid < "${RUN_DIR}/pid" 2>/dev/null || existing_pid=""
-    if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
-      trinity::log "既に実行中（pid ${existing_pid}）。何もせず終了する。"
-      exit 0
-    fi
-    trinity::log "pid ${existing_pid} は死んでいる（stale）。引き継ぎを試みる。"
-    rm -f "${RUN_DIR}/pid"
-    if ! loop::claim_pid; then
-      loop::assert_pid_written
-      trinity::log "他プロセスが同時に引き継いだ。何もせず終了する。"
-      exit 0
-    fi
-  fi
-
-  # 設計分岐の確認: plan.md の `## 要確認の論点` を ask/q に出し、回答（ask/a）を待つ。
-  # 人間の確認に締切は設けない（回答が来るまで安価に待つ）。
-  loop::ask() {
-    local loop="$1"
-    awk '/^## 要確認の論点/{p=1;print;next} p&&/^## /{p=0} p' \
-      "${RUN_DIR}/plan.md" > "${RUN_DIR}/ask/q"
-    rm -f "${RUN_DIR}/ask/a"
-    trinity::status needs-input
-    trinity::log "ループ ${loop}: 確認待ち（ask/q を Orchestrator が拾う）"
-    while [ ! -f "${RUN_DIR}/ask/a" ]; do sleep 5; done
-    { printf '\n## 確定事項（ループ %s で確認済み）\n' "${loop}"; cat "${RUN_DIR}/ask/a"; } \
-      >> "${RUN_DIR}/requirement.md"
-    rm -f "${RUN_DIR}/ask/q" "${RUN_DIR}/ask/a"
-  }
-
-  # RUN_DIR の既存成果物から再開ループ番号とモードを返す。
-  # 出力形式: "<n> <mode>"（例: "2 plan"）。PASS 済みのときは "PASS" のみ。
-  # 各段は自己スキップするため入口判定は不要。
-  # redrive が残っている（＝再収束が未完）ときは PASS 短絡を行わず、最大 eval 番号 + 1 を
-  # 常に plan モードで返す（修正要望による再収束）。
-  loop::resume_point() {
-    local k=0 k_verdict="" num="" verdict="" f
-    for f in "${RUN_DIR}"/eval-*.md; do
-      [ -f "$f" ] || continue
-      num="${f##*/eval-}"
-      num="${num%.md}"
-      case "${num}" in *[!0-9]*) continue ;; esac
-      verdict="$(trinity::verdict_of "$f")"
-      case "${verdict}" in
-        PASS | NEEDS_REVISION | FAIL) ;;
-        *) continue ;;
-      esac
-      if [ "${num}" -gt "${k}" ]; then k="${num}"; k_verdict="${verdict}"; fi
-    done
-
-    if [ -f "${RUN_DIR}/redrive" ]; then
-      printf '%s plan\n' "$((k + 1))"; return
-    fi
-
-    if [ "${k}" -eq 0 ]; then
-      printf '1 plan\n'; return
-    fi
-    [ "${k_verdict}" = PASS ] && { printf 'PASS\n'; return; }
-
-    local n mode
-    n=$((k + 1))
-    case "${k_verdict}" in
-      NEEDS_REVISION) mode=plan ;;
-      *)              mode=revise ;;
-    esac
-    printf '%s %s\n' "${n}" "${mode}"
-  }
-
-  trinity::log "loop 開始: ${BRANCH}"
-
-  # redrive マーカーがあれば修正要望を requirement.md へ取り込む。取り込み済みかどうかは、
-  # requirement.md 末尾の直近の「## 修正要望（re-drive）」節の本文と redrive の内容を比較
-  # して判断する（新しいファイルは増やさない）。一致すれば再追記しない。マーカー自体は
-  # 削除せず、再収束が新しい PASS または終端 failed に達するまで耐久状態として残し、途中で
-  # クラッシュして再起動しても未完のまま続きから拾える。
-  if [ -f "${RUN_DIR}/redrive" ]; then
-    local redrive_body last_section
-    redrive_body="$(cat "${RUN_DIR}/redrive")"
-    last_section="$(awk '
-      /^## 修正要望（re-drive）$/ { buf=""; capture=1; next }
-      capture && /^## / { capture=0 }
-      capture { buf = buf $0 "\n" }
-      END { printf "%s", buf }
-    ' "${RUN_DIR}/requirement.md" 2>/dev/null)" || last_section=""
-    if [ "${redrive_body}" != "${last_section}" ]; then
-      { printf '\n## 修正要望（re-drive）\n'; printf '%s\n' "${redrive_body}"; } >> "${RUN_DIR}/requirement.md"
-      trinity::log "re-drive 信号を検出した。requirement.md に取り込み、最大 eval 番号 + 1 から plan で再収束する"
-    fi
-  fi
-
-  local resume loop mode rc
-  resume="$(loop::resume_point)"
-  if [ "${resume}" = PASS ]; then
-    trinity::log "再開判定: 既に PASS 済み。再実行しない。"
-    trinity::status passed
-    exit 0
-  fi
-  read -r loop mode <<< "${resume}"
-  [ "${loop}" -gt 1 ] && trinity::log "再開: ループ ${loop} から ${mode} で再開する"
-
-  # re-drive は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの予算を
-  # 相対的に与える（redrive が無いときは TRINITY_MAX_LOOPS を絶対上限として扱う）。redrive は
-  # 再収束が完了するまで残るため、この判定は再起動のたびにディスクから読み直され、拡張予算は
-  # クラッシュ後の再開でも失われない。
-  local max_loop="${TRINITY_MAX_LOOPS}"
-  [ -f "${RUN_DIR}/redrive" ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
-
-  while [ "${loop}" -le "${max_loop}" ]; do
-    if [ "${mode}" = plan ]; then
-      rc=0
-      trinity::plan "${loop}" || rc=$?
-      if [ "${rc}" -eq "${TRINITY_RC_NEEDS_INPUT}" ]; then
-        loop::ask "${loop}"
-        continue
-      fi
-      [ "${rc}" -ne 0 ] && exit 1
-      trinity::generate "${loop}"
-    else
-      trinity::revise "${loop}"
-    fi
-
-    trinity::tools "${loop}"
-
-    rc=0
-    trinity::evaluate "${loop}" || rc=$?
-    case "${rc}" in
-      0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; exit 0 ;;
-      2) mode=plan ;;    # NEEDS_REVISION → 再計画
-      3) mode=revise ;;  # FAIL → 既存計画の範囲内で修正
-      *) exit 1 ;;
-    esac
-    loop=$((loop + 1))
-  done
-
-  trinity::status failed
-  trinity::log "ループ ${max_loop} まで回したが PASS に到達しなかった"
-  exit 2
+# trinity::log MSG — RUN_DIR/trinity.log と stderr の両方へ追記する。
+trinity::log() {
+  printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "${RUN_DIR}/trinity.log" >&2
 }
 
-# --- ディスパッチ -------------------------------------------------------------
-loop_main "$@"
+# trinity::status STATE — 状態を1語で RUN_DIR/status に記録する。
+# 取りうる値: running passed failed error。passed/failed/error が終端。
+# 終端では pid を消し、「pid の有無」を走行中の信号にする。passed/failed では redrive も
+# 消して修正要望の再収束を完了扱いにする。redrive を先に、pid を後に消す順序を守ることで、
+# この間にクラッシュしても「pid が死んでいる」というクラッシュ再開の観測にしかならない。
+# error では redrive を残し、未完の再収束として続きから拾えるようにする。
+trinity::status() {
+  printf '%s\n' "$1" > "${RUN_DIR}/status"
+  trinity::log "status -> $1"
+  case "$1" in
+    passed | failed) rm -f "${RUN_DIR}/redrive" "${RUN_DIR}/pid" ;;
+    error)           rm -f "${RUN_DIR}/pid" ;;
+  esac
+}
+
+# trinity::agent_body ROLE — agents/<role>.md の本文（frontmatter を除く）を出力する。
+trinity::agent_body() {
+  awk 'NR==1 && $0=="---"{f=1;next} f && $0=="---"{f=0;next} !f{print}' \
+    "${TRINITY_ROOT}/agents/$1.md"
+}
+
+# trinity::agent_model ROLE — agents/<role>.md の frontmatter から model: を読む。
+# モデル割り当ての単一の正は frontmatter であり、ここに既定値の重複は持たない。
+trinity::agent_model() {
+  awk -F': *' 'NR==1 && $0=="---"{f=1;next} f && $0=="---"{exit} f && $1=="model"{print $2; exit}' \
+    "${TRINITY_ROOT}/agents/$1.md"
+}
+
+# trinity::guard_settings — lib/guard.sh を PreToolUse フックとして注入する --settings JSON。
+# 役割ごとの許否は TRINITY_ROLE（env）で guard.sh 自身が分岐するため、JSON は共通でよい。
+trinity::guard_settings() {
+  local escaped_root="${TRINITY_ROOT//\\/\\\\}"
+  escaped_root="${escaped_root//\"/\\\"}"
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Write|Edit|NotebookEdit|Bash","hooks":[{"type":"command","command":"%s/lib/guard.sh"}]}]}}' \
+    "${escaped_root}"
+}
+
+# trinity::claude ROLE CWD PROMPT — headless な claude を1回起動し標準出力を返す。
+# CLAUDECODE を外してネスト起動を避け、bypassPermissions で worktree のツールを許可しつつ、
+# lib/guard.sh を PreToolUse フックとして注入して役割境界を単層で enforce する。
+trinity::claude() {
+  local role="$1" cwd="$2" prompt="$3"
+  ( cd "$cwd" && env -u CLAUDECODE TRINITY_ROLE="$role" \
+      claude -p "$prompt" \
+      --model "$(trinity::agent_model "$role")" \
+      --permission-mode bypassPermissions \
+      --strict-mcp-config \
+      --settings "$(trinity::guard_settings)" )
+}
+
+# trinity::verdict_of FILE — eval-*.md から VERDICT の値を返す。
+# 各行の装飾（バッククォート・アスタリスク・見出し・引用記号）と前後の空白を取り除いて
+# から照合するため、モデルが判定行をどう装飾して返しても値を読める。
+trinity::verdict_of() {
+  awk '
+    { line = $0
+      gsub(/[`*#>]/, "", line)
+      gsub(/^[ \t]+|[ \t]+$/, "", line)
+      if (match(line, /^VERDICT:[ \t]*[A-Z_]+/)) {
+        value = substr(line, RSTART, RLENGTH)
+        sub(/^VERDICT:[ \t]*/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$1" 2>/dev/null
+}
+
+# trinity::assert_progress PRE_SHA REPORT CONTEXT — コミットか空でない完了レポートがあれば
+# 継続する。どちらも無ければ実装役の真の失敗として error で終了する。
+trinity::assert_progress() {
+  local pre_sha="$1" report="$2" context="$3" post_sha
+  post_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  if [ "${pre_sha}" != "${post_sha}" ]; then
+    return 0
+  fi
+  if [ -s "${report}" ]; then
+    trinity::log "${context}: 変更不要。理由は ${report} を参照"
+    return 0
+  fi
+  trinity::log "${context}: Generator がコミットも完了レポートも作成しなかった"
+  trinity::status error
+  return 1
+}
+
+# trinity::base — リモートデフォルトブランチとの merge-base（diff・レビュー範囲の起点）。
+trinity::base() {
+  local remote_head
+  remote_head="$(git -C "${WORKTREE_DIR}" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null)" || true
+  remote_head="${remote_head##*/}"
+  [ -z "${remote_head}" ] && remote_head="main"
+  git -C "${WORKTREE_DIR}" merge-base HEAD "origin/${remote_head}" 2>/dev/null \
+    || git -C "${WORKTREE_DIR}" rev-list --max-parents=0 HEAD | tail -1
+}
+
+# trinity::context LOOP — 全アクター共通のランタイム入力ブロック。
+trinity::context() {
+  cat <<EOF
+
+## このランの入力
+- RUN_DIR: ${RUN_DIR}
+- WORKTREE_DIR: ${WORKTREE_DIR}
+- BRANCH: ${BRANCH}
+- 現在のループ番号: $1
+- 要件: ${RUN_DIR}/requirement.md を読むこと
+EOF
+}
+
+# --- 各段 ---------------------------------------------------------------------
+
+# trinity::plan LOOP — Planner を起動し plan.md と tasks.tsv を生成させる。
+# plan-<n>.md と tasks.tsv が既にあれば Planner をスキップして plan.md を復元する（再開）。
+trinity::plan() {
+  local loop="$1"
+  if [ -f "${RUN_DIR}/plan-${loop}.md" ] && [ -f "${RUN_DIR}/tasks.tsv" ]; then
+    trinity::log "plan-${loop}.md が既にある。Planner をスキップし plan.md を復元する"
+    cp "${RUN_DIR}/plan-${loop}.md" "${RUN_DIR}/plan.md"
+    return 0
+  fi
+  # tasks.tsv を事前に削除して失敗時の古いファイル誤検出を防ぐ。
+  rm -f "${RUN_DIR}/tasks.tsv"
+  trinity::claude planner "${WORKTREE_DIR}" \
+    "$(trinity::agent_body planner)$(trinity::context "$loop")" \
+    > "${RUN_DIR}/planner-${loop}.out" 2>&1 || true
+  if [ ! -f "${RUN_DIR}/plan.md" ] || [ ! -f "${RUN_DIR}/tasks.tsv" ]; then
+    trinity::status error
+    return 1
+  fi
+  # 計画成功後に plan.md を plan-<n>.md へスナップショットする（再開のチェックポイント）。
+  cp "${RUN_DIR}/plan.md" "${RUN_DIR}/plan-${loop}.md"
+}
+
+# trinity::generate LOOP — tasks.tsv の各行ごとに Generator を新規起動する。
+# gen-<n>-task-<i>.md（完了レポート）が既にあるタスクはスキップする（再開のチェックポイント）。
+trinity::generate() {
+  local loop="$1" idx title files prompt pre_sha agent_body total
+  total="$(awk -F'\t' '$1~/^[0-9]+$/{n++} END{print n+0}' "${RUN_DIR}/tasks.tsv" 2>/dev/null || echo 0)"
+  agent_body="$(trinity::agent_body generator)"
+  while IFS=$'\t' read -r idx title files; do
+    case "${idx}" in '' | *[!0-9]*) continue ;; esac # 空行・ヘッダ行を飛ばす
+    if [ -s "${RUN_DIR}/gen-${loop}-task-${idx}.md" ]; then
+      trinity::log "generate loop ${loop} task ${idx}/${total}: スキップ（完了済み）"
+      continue
+    fi
+    trinity::log "generate loop ${loop} task ${idx}/${total}: ${title}"
+    pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+    prompt="${agent_body}$(trinity::context "$loop")
+- TaskIndex: ${idx}
+- TaskTotal: ${total}
+- TaskTitle: ${title}
+- TaskFiles: ${files}"
+    trinity::claude generator "${WORKTREE_DIR}" "$prompt" \
+      > "${RUN_DIR}/gen-${loop}-task-${idx}.out" 2>&1 || true
+    trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-task-${idx}.md" "generate task ${idx}"
+  done < "${RUN_DIR}/tasks.tsv"
+}
+
+# trinity::revise LOOP — FAIL のとき計画の範囲内で修正コミットを作らせる。
+# gen-<n>-revise.md（完了レポート）が既にあればスキップする（再開のチェックポイント）。
+trinity::revise() {
+  local loop="$1" prompt pre_sha
+  if [ -s "${RUN_DIR}/gen-${loop}-revise.md" ]; then
+    trinity::log "gen-${loop}-revise.md が既にある。revise をスキップする"
+    return 0
+  fi
+  pre_sha="$(git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  prompt="$(trinity::agent_body generator)$(trinity::context "$loop")
+- 修正モード: ${RUN_DIR}/eval-$((loop - 1)).md の指摘を既存計画の範囲内で修正する。新規タスクは追加しない。"
+  trinity::claude generator "${WORKTREE_DIR}" "$prompt" \
+    > "${RUN_DIR}/gen-${loop}-revise.out" 2>&1 || true
+  trinity::assert_progress "${pre_sha}" "${RUN_DIR}/gen-${loop}-revise.md" "revise"
+}
+
+# trinity::tool_step LOOP NAME PROMPT — 道具1つぶんの実行。作業用ファイルへ出力し、道具が
+# 戻ってから本来の名前へ改名する。改名は同一ディレクトリ内で不可分なため、中断した道具は
+# 本来の名前のファイルを残さない（「在る」＝「終わった」が他段と同じく成り立つ）。
+# 完了印は終了コードによらず道具が戻った時点で立て、非ゼロ終了も警告のうえ証拠として残す。
+trinity::tool_step() {
+  local loop="$1" name="$2" prompt="$3" tmp
+  tmp="${RUN_DIR}/${name}-${loop}.md.tmp"
+  trinity::claude generator "${WORKTREE_DIR}" "$prompt" > "${tmp}" 2>&1 \
+    || trinity::log "WARN: ${name} が非ゼロで終了した"
+  mv "${tmp}" "${RUN_DIR}/${name}-${loop}.md"
+}
+
+# trinity::tool_output NAME — RUN_DIR にある道具の出力ファイル名（review-<n>.md 等）を返す。
+# 道具はこの差分につき一度しか走らないが、再収束を挟むと複数残りうるため周番号最大のものを
+# 採る。空ファイルは未完了として扱い、無ければ非ゼロで返る。
+trinity::tool_output() {
+  local name="$1" f best="" best_n=-1 n
+  for f in "${RUN_DIR}"/"${name}"-*.md; do
+    [ -s "$f" ] || continue
+    n="${f##*/"${name}"-}"
+    n="${n%.md}"
+    case "$n" in *[!0-9]*) continue ;; esac
+    [ "$n" -gt "$best_n" ] && { best_n="$n"; best="$f"; }
+  done
+  [ -n "$best" ] || return 1
+  printf '%s\n' "${best##*/}"
+}
+
+# trinity::tools LOOP — /code-review --fix と /simplify を評価の前段で回す（証拠収集）。
+# どちらもこの差分につき一度きり（出力が既にあればスキップ）とし、道具が同じ指摘を周ごとに
+# 入れ直す綱引きを防ぐ。一度きりはクラッシュ再開や修正要望の再収束を跨いでも保たれる。
+trinity::tools() {
+  local loop="$1" name prompt
+  for name in review simplify; do
+    case "$name" in
+      review)   prompt="/code-review --fix $(trinity::base)..HEAD" ;;
+      simplify) prompt="/simplify" ;;
+    esac
+    if trinity::tool_output "$name" >/dev/null; then
+      trinity::log "${name}-*.md が既にある。${name} をスキップする（この差分に対して実行済み）"
+    else
+      trinity::tool_step "$loop" "$name" "$prompt"
+    fi
+  done
+  # 道具が適用した修正があればコミットし、Evaluator が見る差分を確定させる。
+  # これはハーネス自身が発行する git であり、claude -p 子の PreToolUse フックの対象外。
+  if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
+    git -C "${WORKTREE_DIR}" add -A || true
+    git -C "${WORKTREE_DIR}" commit -q -m "chore: 道具の自動修正を反映する" || true
+  fi
+}
+
+# trinity::evaluate LOOP — Evaluator を起動し、返した本文を eval-<n>.md として確定させる。
+# 戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=判定が取れず error。
+# 標準出力（判定本文）と標準エラー（ログ）は別々に受ける。確定は作業用ファイルからの改名で
+# 原子的に行い、非ゼロ終了・出力が空・VERDICT: が読めない、のいずれでも改名せず error に
+# 落とす（eval-<n>.md が「在る」＝「判定が取れた」を保つ）。
+trinity::evaluate() {
+  local loop="$1" prompt out tmp err rc verdict review_out simplify_out
+  review_out="$(trinity::tool_output review)" && simplify_out="$(trinity::tool_output simplify)" || {
+    trinity::log "evaluate loop ${loop}: 道具の出力が見つからない（trinity::tools が完了していない）"
+    trinity::status error
+    return 1
+  }
+  prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
+- ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
+- 道具の出力: ${review_out} / ${simplify_out}"
+  out="${RUN_DIR}/eval-${loop}.md"
+  tmp="${out}.tmp"
+  err="${RUN_DIR}/evaluator-${loop}.out"
+  rc=0
+  trinity::claude evaluator "${WORKTREE_DIR}" "$prompt" > "${tmp}" 2> "${err}" || rc=$?
+  if [ "${rc}" -ne 0 ] || [ ! -s "${tmp}" ]; then
+    trinity::log "evaluate loop ${loop}: Evaluator が失敗した（rc=${rc}）。出力は ${tmp}・標準エラーは ${err} を参照"
+    trinity::status error
+    return 1
+  fi
+  verdict="$(trinity::verdict_of "${tmp}")"
+  case "${verdict}" in
+    PASS | NEEDS_REVISION | FAIL) mv "${tmp}" "${out}" ;;
+    *)
+      trinity::log "evaluate loop ${loop}: VERDICT: が読めない（先頭行: $(head -n1 "${tmp}")）。出力は ${tmp} を参照"
+      trinity::status error
+      return 1
+      ;;
+  esac
+  case "${verdict}" in
+    PASS)           trinity::status passed; return 0 ;;
+    NEEDS_REVISION) return 2 ;;
+    FAIL)           return 3 ;;
+  esac
+}
+
+# --- 収束ループ ----------------------------------------------------------------
+
+# pid を原子的に主張する（O_EXCL）。既存かつ生存していれば多重起動として何もせず終わる。
+# 死んでいれば前回のクラッシュ跡として削除し、同じ O_EXCL で再主張を試みる。再主張が
+# 失敗したら他プロセスが同時に引き継いだということなので、自分は退く。書き込み自体が
+# 失敗した（ディスク・権限の異常）場合は競合と区別し、握りつぶさず失敗させる。
+loop::claim_pid() {
+  ( set -o noclobber; printf '%s\n' "$$" > "${RUN_DIR}/pid" ) 2>/dev/null
+}
+if ! loop::claim_pid; then
+  [ -s "${RUN_DIR}/pid" ] || { trinity::log "pid ファイルの作成に失敗した"; exit 1; }
+  existing_pid=""
+  IFS= read -r existing_pid < "${RUN_DIR}/pid" 2>/dev/null || existing_pid=""
+  if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+    trinity::log "既に実行中（pid ${existing_pid}）。何もせず終了する。"
+    exit 0
+  fi
+  trinity::log "pid ${existing_pid} は死んでいる。引き継ぎを試みる。"
+  rm -f "${RUN_DIR}/pid"
+  if ! loop::claim_pid; then
+    [ -s "${RUN_DIR}/pid" ] || { trinity::log "pid ファイルの作成に失敗した"; exit 1; }
+    trinity::log "他プロセスが同時に引き継いだ。何もせず終了する。"
+    exit 0
+  fi
+fi
+
+# 修正要望（redrive）があれば requirement.md へ一度だけ取り込む。取り込み済みかどうかは、
+# requirement.md 末尾の直近の「## 修正要望」節の本文と redrive の内容を比較して判断する。
+# マーカー自体は削除せず、再収束が新しい PASS または終端 failed に達するまで耐久状態として
+# 残し、途中でクラッシュして再起動しても未完のまま続きから拾える。
+if [ -f "${RUN_DIR}/redrive" ]; then
+  redrive_body="$(cat "${RUN_DIR}/redrive")"
+  last_section="$(awk '
+    /^## 修正要望$/ { buf=""; capture=1; next }
+    capture && /^## / { capture=0 }
+    capture { buf = buf $0 "\n" }
+    END { printf "%s", buf }
+  ' "${RUN_DIR}/requirement.md" 2>/dev/null)" || last_section=""
+  if [ "${redrive_body}" != "${last_section}" ]; then
+    { printf '\n## 修正要望\n'; printf '%s\n' "${redrive_body}"; } >> "${RUN_DIR}/requirement.md"
+    trinity::log "修正要望を検出した。requirement.md に取り込み、再収束する"
+  fi
+fi
+
+# RUN_DIR の既存成果物から再開位置を決める。最大の eval 番号 k とその判定から、
+# 次のループ番号とモード（plan / revise）を導く。PASS 済みなら再実行しない。
+# redrive が残っている（＝再収束が未完）ときは PASS でも短絡せず、k+1 から plan で始める。
+k=0 k_verdict=""
+for f in "${RUN_DIR}"/eval-*.md; do
+  [ -f "$f" ] || continue
+  num="${f##*/eval-}"
+  num="${num%.md}"
+  case "${num}" in *[!0-9]*) continue ;; esac
+  verdict="$(trinity::verdict_of "$f")"
+  case "${verdict}" in PASS | NEEDS_REVISION | FAIL) ;; *) continue ;; esac
+  if [ "${num}" -gt "${k}" ]; then k="${num}" k_verdict="${verdict}"; fi
+done
+
+if [ -f "${RUN_DIR}/redrive" ]; then
+  loop=$((k + 1)) mode=plan
+elif [ "${k}" -eq 0 ]; then
+  loop=1 mode=plan
+elif [ "${k_verdict}" = PASS ]; then
+  trinity::log "再開判定: 既に PASS 済み。再実行しない。"
+  trinity::status passed
+  exit 0
+else
+  loop=$((k + 1))
+  case "${k_verdict}" in
+    NEEDS_REVISION) mode=plan ;;
+    *)              mode=revise ;;
+  esac
+fi
+
+# 修正要望による再収束は新しい収束試行なので、開始ループから TRINITY_MAX_LOOPS 回ぶんの
+# 予算を相対的に与える。redrive は再収束が完了するまで残るため、この判定は再起動のたびに
+# ディスクから読み直され、拡張予算はクラッシュ後の再開でも失われない。
+max_loop="${TRINITY_MAX_LOOPS}"
+[ -f "${RUN_DIR}/redrive" ] && max_loop=$((loop + TRINITY_MAX_LOOPS - 1))
+
+trinity::status running
+trinity::log "loop 開始: ${BRANCH}（ループ ${loop}・${mode} から）"
+
+while [ "${loop}" -le "${max_loop}" ]; do
+  if [ "${mode}" = plan ]; then
+    trinity::plan "${loop}" || exit 1
+    trinity::generate "${loop}"
+  else
+    trinity::revise "${loop}"
+  fi
+
+  trinity::tools "${loop}"
+
+  rc=0
+  trinity::evaluate "${loop}" || rc=$?
+  case "${rc}" in
+    0) trinity::log "ループ ${loop} で PASS。PR 作成へ。"; exit 0 ;;
+    2) mode=plan ;;   # NEEDS_REVISION → 再計画
+    3) mode=revise ;; # FAIL → 既存計画の範囲内で修正
+    *) exit 1 ;;
+  esac
+  loop=$((loop + 1))
+done
+
+trinity::status failed
+trinity::log "ループ ${max_loop} まで回したが PASS に到達しなかった"
+exit 2

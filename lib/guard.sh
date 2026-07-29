@@ -5,7 +5,7 @@
 # stdin から PreToolUse フックの JSON（`tool_name`/`tool_input` を含む）を受け取り、環境変数
 # TRINITY_ROLE（planner/generator/evaluator）と RUN_DIR を読んで、Claude Code のフック仕様
 # （`hookSpecificOutput.permissionDecision`）に沿って allow/deny を stdout の JSON で返す。
-# 判断基準そのもの（誰が何を拒否されるか）は plan.md の役割プロファイルを機構化したものであり、
+# 判断基準そのもの（誰が何を拒否されるか）はこのファイルが単一の正であり、
 # 振る舞いの単一の正である agents/<role>.md の記述と矛盾しない。
 #
 # 役割境界はこのフック一本で enforce する。Write/Edit/NotebookEdit はファイル書き込みの範囲を、
