@@ -2,7 +2,7 @@
 
 Trinity は、Anthropic の Planner / Generator / Evaluator パターンを3つのサブエージェントとして実装した、長時間タスク向けのハーネスである。 `/trinity:run <要件>` で起動すると、 `git-flow` スキルが切り出した隔離 worktree の中で Generator が実装してコミットし、Evaluator が Production-Ready の品質水準を承認するまで反復する。承認後はオーケストレーターが Pull Request を作成し、マージ候補の選択・課題起票・クリーンアップをユーザーに確認しながら進める。
 
-小さい具体的タスクから大きな抽象的タスクまで、あらゆるエンジニアリングタスクを同じひとつの仕組みに落とす。ユーザーが負うのはバックログの管理と、成果を受け入れるかの判断だけになる。フォアグラウンドの Orchestrator は自由形式の要件解釈とユーザー対話に専念し、Issue ごとの収束ループ（`Plan → Generator → 道具 → Evaluator`）はシェルへ機械化して背景で回す。機械が下せる8割——実行検証・差分レビュー・整理——は組み込みコマンド `/verify`・`/code-review --fix`・`/simplify` を Evaluator の道具として委ね、Evaluator は削れない2割の判断にだけ希少な判断力を注ぐ。
+小さい具体的タスクから大きな抽象的タスクまで、あらゆるエンジニアリングタスクを同じひとつの仕組みに落とす。ユーザーが負うのはバックログの管理と、成果を受け入れるかの判断だけになる。フォアグラウンドの Orchestrator は自由形式の要件解釈とユーザー対話に専念し、Issue ごとの収束ループ（`Plan → Generator → 道具 → Evaluator`）はシェルへ機械化して背景で回す。機械が下せる8割——実行検証・差分レビュー・整理——は組み込みコマンド `/verify`・`/code-review --fix`・`/simplify` を Evaluator の道具として委ねる。差分の機械的な掃除（`/code-review --fix`・`/simplify`）はその差分につき一度だけ行い、挙動の検証（`/verify`）は周ごとに行う。Evaluator は削れない2割の判断にだけ希少な判断力を注ぐ。
 
 ## Role Separation
 
@@ -49,12 +49,12 @@ Trinity が計画・実装を扱う処理単位を、粒度の大きい順に定
 | :-- | :-- |
 | セッション | `/trinity:run` の起動から、PR 作成・マージ候補の確認・改善提案（課題起票）・クリーンアップまでの、コマンド1回の実行全体。複数のパイプラインを束ねる最上位の単位 |
 | パイプライン | 1つの Worktree で実行される処理系列。ループを Production-Ready な品質水準に達するまで繰り返し、1つの PR を作成するまでの流れ |
-| ループ | パイプライン内で繰り返される `Plan → Generator → 道具 → Evaluator` の1周。道具（`/code-review --fix`・`/simplify`・`/verify`）で機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める |
+| ループ | パイプライン内で繰り返される `Plan → Generator → 道具 → Evaluator` の1周。差分を書き換える道具（`/code-review --fix`・`/simplify`）はその差分につき一度だけ、挙動を検証する `/verify` は周ごとに走り、Evaluator の3値判定が継続と離脱を決める |
 | タスク | 各 Generator が実施する、独立して動作し単独で検証可能な最小実装単位。既存コードが要件をすでに満たしていれば、コミットせず理由をレポートに残すことも正当な完了とする |
 
 ## Processing Flow
 
-全体像を図に示す。Orchestrator は起動可能な各 Issue の `trinity loop` をハーネス追跡の背景タスクとして直接起動し、各 Issue の `status`・`ask/q` をターンを跨いでポーリングして進捗を追う。各ループは道具で機械的な8割を片付けた上で、Evaluator の3値判定が継続と離脱を決める。
+全体像を図に示す。Orchestrator は起動可能な各 Issue の `trinity loop` をハーネス追跡の背景タスクとして直接起動し、各 Issue の `status`・`ask/q` をターンを跨いでポーリングして進捗を追う。各ループは差分を書き換える道具をその差分につき一度だけ走らせ、挙動の検証は周ごとに行った上で、Evaluator の3値判定が継続と離脱を決める。
 
 ```mermaid
 flowchart LR
@@ -88,10 +88,10 @@ flowchart LR
 | 判定 | 動作 |
 | :-- | :-- |
 | `PASS` | 4軸すべてを満たす。ループを離脱して PR 作成へ進む |
-| `NEEDS_REVISION` | 計画・要件が誤っている、または道具（`/code-review --fix`・`/simplify`）の変更が `requirement.md` と食い違う。Planner が再計画する（要件自体の疑いはユーザーに差し戻し、道具が原因なら仕様進化として Planner が引き取る。詳細は次段落） |
+| `NEEDS_REVISION` | 計画・要件が誤っている、または道具（`/code-review --fix`・`/simplify`）の変更が `requirement.md` と食い違う。道具パスの逸脱は常にここへ来る。Planner が再計画する（要件自体の疑いはユーザーに差し戻し、道具が原因なら追認・回復のどちらも Planner が自ら引き取る。詳細は次段落） |
 | `FAIL` | 既存計画の範囲内で Generator が修正する |
 
-道具の変更が `requirement.md` と食い違うときの判断基準は `agents/evaluator.md` の Tool Deviation を単一の正とする。仕様進化は Planner・Evaluator 間で完結し、人間へは戻さない。
+道具の変更が `requirement.md` と食い違うときの判断基準は `agents/evaluator.md` の Tool Deviation を単一の正とする。追認（`requirement.md` の更新）・回復（復旧タスクの追加）のいずれも Planner・Evaluator 間で完結し、人間へは戻さない。
 
 `PASS` に達するとパイプラインの `status` が `passed` になり、Orchestrator が push して PR を作成する。PR 確定後の確認は原則まとめて（1回の `AskUserQuestion` コールで）行い、修正要望が入った場合はその Issue の後処理を再収束後に改めて確認する。手続きの詳細は `commands/run.md` を単一の正とする。計画中に設計分岐が見つかった場合も同様に、Planner は `## 要確認の論点` を surface し、パイプラインは確認待ち（`needs-input`）でブロックする。`AskUserQuestion` を呼ぶのは常にフォアグラウンドの Orchestrator だけで、回答はファイルチャネル（`ask/q`・`ask/a`）で背景パイプラインへ橋渡しされる。
 

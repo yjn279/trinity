@@ -70,8 +70,22 @@ trinity::claude() {
 }
 
 # trinity::verdict_of FILE — eval-*.md から VERDICT の値（PASS/NEEDS_REVISION/FAIL）を返す。
+# 各行のバッククォート・アスタリスク・見出し記号・引用記号・前後の空白を取り除いてから
+# 照合するため、モデルが判定行をどう装飾して返しても値を読める。値そのものが3値の
+# いずれかであるかは呼び出し側の判定に委ねる。
 trinity::verdict_of() {
-  awk '/^VERDICT:/{print $2; exit}' "$1" 2>/dev/null
+  awk '
+    { line = $0
+      gsub(/[`*#>]/, "", line)
+      gsub(/^[ \t]+|[ \t]+$/, "", line)
+      if (match(line, /^VERDICT:[ \t]*[A-Z_]+/)) {
+        value = substr(line, RSTART, RLENGTH)
+        sub(/^VERDICT:[ \t]*/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$1" 2>/dev/null
 }
 
 # trinity::has_report FILE — 完了レポート（空でない）の有無を判定する。
@@ -216,13 +230,43 @@ trinity::tool_step() {
   mv "${tmp}" "${out}"
 }
 
+# trinity::tool_output NAME — RUN_DIR にある道具の出力ファイル名（review-<n>.md 等、拡張子込み）を
+# 返す。差分を書き換える道具は一度しか走らないため生存する周番号は1つに定まるが、旧版（周ごとに
+# 実行）の RUN_DIR を引き継いだ再開では複数残りうるため周番号最大のものを採る。空ファイルは
+# 未完了として扱い（trinity::has_report）、無ければ非ゼロで返る。
+trinity::tool_output() {
+  local name="$1" f best="" best_n=-1 n
+  for f in "${RUN_DIR}"/"${name}"-*.md; do
+    trinity::has_report "$f" || continue
+    n="${f##*/"${name}"-}"; n="${n%.md}"
+    case "$n" in *[!0-9]*) continue ;; esac
+    [ "$n" -gt "$best_n" ] && { best_n="$n"; best="$f"; }
+  done
+  [ -n "$best" ] || return 1
+  printf '%s\n' "${best##*/}"
+}
+
+# trinity::tool_once LOOP NAME PROMPT — 差分を書き換える道具1つぶんの実行判断。この差分に対して
+# name-*.md が既にあればその周は上書きせずスキップし、無ければ trinity::tool_step で実行する。
+# これにより道具が同じ逸脱を周ごとに入れ直すことがなく、クラッシュ再開や再収束（redrive）を
+# 跨いでも「一度きり」が保たれる。
+trinity::tool_once() {
+  local loop="$1" name="$2" prompt="$3"
+  if trinity::tool_output "$name" >/dev/null; then
+    trinity::log "${name}-*.md が既にある。${name} をスキップする（この差分に対して実行済み）"
+  else
+    trinity::tool_step "$loop" "$name" "$prompt"
+  fi
+}
+
 # trinity::tools LOOP — /code-review --fix・/simplify・/verify を前段で回す（Evaluator の証拠収集）。
-# 道具ごとに trinity::tool_step でチェックポイントするため、再開時は済んだ道具から先に進む。
+# /code-review --fix・/simplify は trinity::tool_once で一度きりに保ち、挙動の検証（/verify）は
+# 証拠が周ごとに要るため毎周実行する。
 trinity::tools() {
-  local loop="$1" base; base="$(trinity::base)"
+  local loop="$1"
   trinity::status reviewing
-  trinity::tool_step "$loop" review "/code-review --fix ${base}..HEAD"
-  trinity::tool_step "$loop" simplify "/simplify"
+  trinity::tool_once "$loop" review "/code-review --fix $(trinity::base)..HEAD"
+  trinity::tool_once "$loop" simplify "/simplify"
   # 道具が適用した修正があればコミットして、Evaluator が見る差分を確定させる。
   # これはハーネス自身が発行する git であり claude -p 子の PreToolUse フックの対象外。
   if [ -n "$(git -C "${WORKTREE_DIR}" status --porcelain)" ]; then
@@ -232,20 +276,56 @@ trinity::tools() {
   trinity::tool_step "$loop" verify "/verify この差分が要件どおり動くかをアプリで確認し、結果を簡潔に報告する。"
 }
 
-# trinity::evaluate LOOP — Evaluator を起動し eval-<n>.md を書かせる。戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=不明。
+# trinity::evaluate LOOP — Evaluator を起動し、返した本文を eval-<n>.md として確定させる。
+# 戻り値: 0=PASS 2=NEEDS_REVISION 3=FAIL 1=判定が取れず error。
+# 標準出力（判定本文）と標準エラー（ログ）は混ぜずに別々に受ける。確定は trinity::tool_step と
+# 同じく作業用ファイルからの改名で原子的に行い、非ゼロ終了・出力が空・VERDICT: が読めない、
+# のいずれでも改名せず原因と証拠の在り処をログに残して error に落とす
+# （eval-<n>.md が「在る」＝「判定が取れた」を保つ）。
 trinity::evaluate() {
-  local loop="$1" prompt verdict
+  local loop="$1" prompt out tmp err rc verdict review_out simplify_out
   trinity::status evaluating
+  review_out="$(trinity::tool_output review)" || {
+    trinity::log "evaluate loop ${loop}: review-*.md が見つからない（trinity::tools が完了していない）"
+    trinity::status error
+    return 1
+  }
+  simplify_out="$(trinity::tool_output simplify)" || {
+    trinity::log "evaluate loop ${loop}: simplify-*.md が見つからない（trinity::tools が完了していない）"
+    trinity::status error
+    return 1
+  }
   prompt="$(trinity::agent_body evaluator)$(trinity::context "$loop")
 - ループ内最終コミット: $(git -C "${WORKTREE_DIR}" rev-parse HEAD)
-- 道具の出力: review-${loop}.md / simplify-${loop}.md / verify-${loop}.md"
+- 道具の出力: ${review_out} / ${simplify_out} / verify-${loop}.md"
+  out="${RUN_DIR}/eval-${loop}.md"
+  tmp="${out}.tmp"
+  err="${RUN_DIR}/evaluator-${loop}.out"
+  rc=0
   trinity::claude evaluator "${TRINITY_EVALUATOR_MODEL}" "${WORKTREE_DIR}" "$prompt" \
-    > "${RUN_DIR}/evaluator-${loop}.out" 2>&1 || true
-  verdict="$(trinity::verdict_of "${RUN_DIR}/eval-${loop}.md")"
+    > "${tmp}" 2> "${err}" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    trinity::log "evaluate loop ${loop}: Evaluator が非ゼロ終了（rc=${rc}）。出力は ${tmp}・標準エラーは ${err} を参照"
+    trinity::status error
+    return 1
+  fi
+  if [ ! -s "${tmp}" ]; then
+    trinity::log "evaluate loop ${loop}: Evaluator の出力が空。標準エラーは ${err} を参照"
+    trinity::status error
+    return 1
+  fi
+  verdict="$(trinity::verdict_of "${tmp}")"
   case "${verdict}" in
-    PASS)           trinity::status passed;        return 0 ;;
+    PASS | NEEDS_REVISION | FAIL) mv "${tmp}" "${out}" ;;
+    *)
+      trinity::log "evaluate loop ${loop}: VERDICT: が読めない（先頭行: $(head -n1 "${tmp}")）。出力は ${tmp} を参照"
+      trinity::status error
+      return 1
+      ;;
+  esac
+  case "${verdict}" in
+    PASS)           trinity::status passed;         return 0 ;;
     NEEDS_REVISION) trinity::status needs-revision; return 2 ;;
-    FAIL)           trinity::status revising;       return 3 ;;
-    *)              trinity::status error;          return 1 ;;
+    FAIL)           trinity::status revising;        return 3 ;;
   esac
 }
