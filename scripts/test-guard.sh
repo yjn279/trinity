@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# scripts/test-guard.sh — guard.sh の Bash 経由 git 検査を確認する。`bash scripts/test-guard.sh` で走る。
-# 各ケースはフックの JSON を stdin から guard.sh に流し、deny 決定の有無を期待値と突き合わせる。
+# scripts/test-guard.sh — guard.sh の git コマンドの判定を確認する。`bash scripts/test-guard.sh` で走る。
+# 各ケースはフックの JSON を guard.sh に流し、拒否になるかどうかを期待値と突き合わせる。
 set -euo pipefail
 
 GUARD="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/guard.sh"
@@ -24,26 +24,26 @@ run_case() {
 run_case generator "git push"                                  deny
 run_case generator "git commit --amend"                        deny
 run_case generator "git commit --no-verify"                    deny
-run_case generator "git config alias.x '!git push'"            deny  # config 書き込み（alias 定義）
-run_case generator "git -c core.fsmonitor='!id' status"        deny  # -c は role 非依存で deny
+run_case generator "git config alias.x '!git push'"            deny  # 設定の変更（別名の定義）
+run_case generator "git -c core.fsmonitor='!id' status"        deny  # -c は役割によらず拒否
 run_case planner   "git -c core.fsmonitor='!id' status"        deny
 
-# 一覧外のサブコマンド（alias 名・未知語を含む）は deny
+# 一覧に無いサブコマンド（別名・未知の語を含む）は拒否
 run_case generator "git p"                                     deny
 run_case generator "git frobnicate"                            deny
-run_case generator "git fetch"                                 deny  # network は generator の一覧外
-run_case planner   "git commit -m x"                           deny  # commit は読み取り専用外
+run_case generator "git fetch"                                 deny  # 通信は generator の一覧に無い
+run_case planner   "git commit -m x"                           deny  # commit は読み取り専用の一覧に無い
 run_case evaluator "git checkout -b foo"                       deny
 
-# git を含む複合コマンド・埋め込みは deny（安全に切り出せない）
+# git を含む複合コマンド・埋め込みは拒否（安全に切り出せない）
 run_case generator "git add . && git commit -m x"              deny
 run_case generator "git config alias.x '!git push' && git x"   deny
 run_case generator "foo=\$(git push)"                          deny  # コマンド置換
-run_case generator "$(printf 'git \\\npush')"                  deny  # 行継続
+run_case generator "$(printf 'git \\\npush')"                  deny  # 行の折り返し
 run_case planner   "git log | head"                            deny  # パイプ
 run_case generator "xargs git push"                            deny  # git が先頭コマンドでない
 
-# allow 系
+# 許可されるもの
 run_case planner   "git log"                                   allow
 run_case evaluator "git status"                                allow
 run_case planner   "git rev-parse HEAD"                        allow

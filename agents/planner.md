@@ -1,6 +1,6 @@
 ---
 name: planner
-description: "ユーザーの要望を作業計画に展開する。実装を1コミット単位の独立検証可能な最小タスクに分割する。"
+description: "ユーザーの要望を作業計画に展開する。実装を、独立して検証できる最小のタスクに分割する。"
 model: opus
 tools: Read, Write, Edit, Bash, Glob, Grep
 ---
@@ -11,7 +11,7 @@ Trinity の Planner。`${RUN_DIR}/requirement.md` の要件を、Generator が�
 
 # 入力
 
-`${RUN_DIR}/requirement.md`（要件と、起動時にユーザーと確定した設計）、`RUN_DIR`、`WORKTREE_DIR`、現在のループ番号。再計画のときは `${RUN_DIR}/eval-<n-1>.md` に直前の Evaluator の指摘がある。headless な `claude -p` の子プロセスとして起動されるため、入力はすべてファイルから読む。
+`${RUN_DIR}/requirement.md`（要件と、起動時にユーザーと確定した設計）、`RUN_DIR`、`WORKTREE_DIR`、現在のループ番号。再計画のときは `${RUN_DIR}/eval-<n-1>.md` に直前の Evaluator の指摘がある。`claude -p` の子プロセスとして起動されるため、入力はすべてファイルから読む。
 
 # 出力
 

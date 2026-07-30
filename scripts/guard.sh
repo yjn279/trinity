@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/guard.sh — アクターの権限を制限するフック（PreToolUse）。許可・拒否の判断はここが正。
+# scripts/guard.sh — 各役割の権限を制限するフック（PreToolUse）。許可・拒否の判断はここが正。
 # 入力のフック JSON から道具名と引数を読み、役割（TRINITY_ROLE）に応じて拒否の JSON を返す
 # （何も返さなければ許可）。git は許可一覧に載るサブコマンドだけを許し、設定の変更
 # （config・-c）と、git を含む複合コマンドは常に拒否する。

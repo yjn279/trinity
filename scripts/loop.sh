@@ -15,8 +15,8 @@ mkdir -p "${RUN_DIR}"
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
-# 状態を1語で記録する。passed / failed / error が終端。終端では pid を消し、passed / failed では
-# redrive も消す。error では redrive を残し、再起動で続きから再開できるようにする。
+# 状態を1語で記録する。passed / failed / error が終了状態。終了時に pid を消し、passed / failed
+# では redrive も消す。error では redrive を残し、再起動で続きから再開できるようにする。
 status() {
   printf '%s\n' "$1" > "${RUN_DIR}/status"
   log "status -> $1"

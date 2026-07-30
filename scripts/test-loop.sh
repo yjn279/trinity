@@ -38,13 +38,13 @@ check() {
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; fi
 }
 
-# 1周目で PASS に到達し、成果物と終端の状態が揃う。
+# 1周目で PASS に到達し、成果物と終了状態が揃う。
 PATH="$TMP/bin:$PATH" "$ROOT/scripts/loop.sh" "$TMP/run" "$TMP/wt" main 2> "$TMP/log1"
 check "status が passed になる"        '[ "$(cat "$TMP/run/status")" = passed ]'
 check "eval-1.md が PASS で残る"       'grep -q "VERDICT: PASS" "$TMP/run/eval-1.md"'
 check "道具の出力が残る"               '[ -s "$TMP/run/review.md" ] && [ -s "$TMP/run/simplify.md" ]'
 check "タスクのコミットが作られる"     '[ "$(git -C "$TMP/wt" log -1 --format=%s)" = task ]'
-check "終端で pid が消える"            '[ ! -f "$TMP/run/pid" ]'
+check "終了時に pid が消える"          '[ ! -f "$TMP/run/pid" ]'
 
 # PASS 済みの再実行は何もしない。
 PATH="$TMP/bin:$PATH" "$ROOT/scripts/loop.sh" "$TMP/run" "$TMP/wt" main 2> "$TMP/log2"
