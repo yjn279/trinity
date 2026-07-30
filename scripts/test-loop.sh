@@ -11,7 +11,11 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/claude" <<'STUB'
 #!/usr/bin/env bash
-prompt="$2"
+prompt=""
+while [ $# -gt 0 ]; do
+  [ "$1" = -p ] && { prompt="$2"; shift; }
+  shift
+done
 case "${TRINITY_ROLE}:${prompt}" in
   planner:*)
     printf '# 計画\n' > "${RUN_DIR}/plan.md"

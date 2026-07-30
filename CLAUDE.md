@@ -15,14 +15,14 @@
 ├── README.md            # 設計と確定仕様
 ├── commands/
 │   └── run.md           # Orchestrator の手順（設計確認・実行・PR・受け入れ・後片付け）
-├── agents/              # 各役割のふるまいとモデル（frontmatter の model: をシェルが読む）
+├── agents/              # 各役割のふるまいとモデル（claude --agent として読み込まれる）
 │   ├── planner.md
 │   ├── generator.md
 │   └── evaluator.md
 └── scripts/
     ├── README.md        # スクリプトの詳しい説明
     ├── loop.sh          # ループの制御と共通の部品（状態・再開・子プロセスの起動）
-    ├── steps/           # ループの各工程（計画・実装・修正・ツール・評価）。loop.sh が読み込む
+    ├── steps.sh         # ループの各工程（計画・実装・修正・ツール・評価）。loop.sh が読み込む
     ├── guard.sh         # 各役割の権限を制限するフック。許可・拒否の判断はここが正
     ├── test-guard.sh    # 権限の許可・拒否のテスト
     └── test-loop.sh     # ループの通し動作のテスト

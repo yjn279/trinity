@@ -28,23 +28,23 @@ status() {
 
 fail() { log "$*"; status error; exit 1; }
 
-agent_body()  { awk 'f==2 {print} /^---$/ {f++}' "${TRINITY_ROOT}/agents/$1.md"; }
-agent_model() { awk -F': *' '/^model:/ {print $2; exit}' "${TRINITY_ROOT}/agents/$1.md"; }
-head_sha()    { git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true; }
+head_sha() { git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true; }
 
 # VERDICT 行から判定値を読む。記号と空白の飾りは取り除いてから照合する。
 verdict_of() { tr -d '`*#> \t' < "$1" | grep -m1 -oE '^VERDICT:[A-Z_]+' | cut -d: -f2 || true; }
 
 context() {
-  printf '\n## このランの入力\n- RUN_DIR: %s\n- WORKTREE_DIR: %s\n- BRANCH: %s\n- 現在のループ番号: %s\n- 要件: %s/requirement.md を読むこと\n' \
+  printf '## このランの入力\n- RUN_DIR: %s\n- WORKTREE_DIR: %s\n- BRANCH: %s\n- 現在のループ番号: %s\n- 要件: %s/requirement.md を読むこと\n' \
     "${RUN_DIR}" "${WORKTREE_DIR}" "${BRANCH}" "$1" "${RUN_DIR}"
 }
 
-# claude を子プロセスとして1回起動する。CLAUDECODE を外して入れ子と誤検出されるのを避け、
-# guard.sh をフックとして注入して役割の権限を制限する。
+# 役割の定義（agents/<役割>.md）を claude 自身に読み込ませて子プロセスを1回起動する。
+# Trinity を --plugin-dir でプラグインとして渡すため、どこから駆動しても同じ定義が解決される。
+# CLAUDECODE を外して入れ子と誤検出されるのを避け、guard.sh をフックとして注入して権限を制限する。
 actor() {
   ( cd "${WORKTREE_DIR}" && env -u CLAUDECODE TRINITY_ROLE="$1" \
-      claude -p "$2" --model "$(agent_model "$1")" \
+      claude --agent "trinity:$1" -p "$2" \
+      --plugin-dir "${TRINITY_ROOT}" \
       --permission-mode bypassPermissions --strict-mcp-config \
       --settings "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Write|Edit|NotebookEdit|Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"${TRINITY_ROOT}/scripts/guard.sh\"}]}]}}" )
 }
@@ -54,11 +54,8 @@ progressed() {
   [ "$1" != "$(head_sha)" ] || [ -s "$2" ] || fail "$3: コミットも完了レポートも作られなかった"
 }
 
-# 各工程を読み込む。
-for f in "${TRINITY_ROOT}/scripts/steps/"*.sh; do
-  # shellcheck source=/dev/null
-  . "$f"
-done
+# shellcheck source=scripts/steps.sh
+. "${TRINITY_ROOT}/scripts/steps.sh"
 
 # 二重起動を防ぐ。起動元が直列に呼ぶため、生存確認だけでよい。
 kill -0 "$(cat "${RUN_DIR}/pid" 2>/dev/null)" 2>/dev/null && { log "既に実行中。何もしない。"; exit 0; }

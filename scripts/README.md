@@ -2,13 +2,13 @@
 
 このフォルダには、Trinity を動かすシェルスクリプトが入っている。ユーザーが直接実行するものではなく、`/trinity:run` を受け取ったメイン会話の Claude（Orchestrator）が `commands/run.md` の手順に従って起動する。
 
-作業単位1つにつき `loop.sh` が1本、バックグラウンドで走る。`loop.sh` は各工程（`steps/`）を順に呼び、それぞれの工程が Planner・Generator・Evaluator を `claude -p` の子プロセスとして起動する。子プロセスには `guard.sh` が組み込まれ、ツールを使う直前に毎回呼ばれて役割ごとの権限を制限する。
+作業単位1つにつき `loop.sh` が1本、バックグラウンドで走る。`loop.sh` は各工程（`steps.sh`）を順に呼び、それぞれの工程が Planner・Generator・Evaluator を `claude -p` の子プロセスとして起動する。子プロセスには `guard.sh` が組み込まれ、ツールを使う直前に毎回呼ばれて役割ごとの権限を制限する。
 
 ```mermaid
 flowchart LR
   orchestrator[メイン会話] -->|起動| loopScript[loop.sh]
-  loopScript --> steps[steps/]
-  steps -->|claude -p| actorProcess[子プロセス]
+  loopScript --> stepsScript[steps.sh]
+  stepsScript -->|claude -p| actorProcess[子プロセス]
   guardScript[guard.sh] -->|権限の制限| actorProcess
 ```
 
@@ -56,19 +56,19 @@ flowchart TB
 | `status`・`pid`・`redrive` | `loop.sh`・Orchestrator | 状態・実行中の目印・作り直しの合図 |
 | `trinity.log` | 全員 | 実行ログ |
 
-## steps/
+## steps.sh
 
-`loop.sh` が読み込む、工程ごとのファイルである。
+`loop.sh` が読み込む、各工程の関数の集まりである。
 
-| ファイル | 工程 | すること |
+| 関数 | 工程 | すること |
 | :-- | :-- | :-- |
-| `plan.sh` | 計画 | Planner を起動し、`plan.md` と `tasks.tsv` を作らせる |
-| `generate.sh` | 実装 | `tasks.tsv` の1行ごとに Generator を起動する。コミットか完了レポートが無ければ失敗として止める |
-| `revise.sh` | 修正 | `FAIL` の指摘を、計画の範囲内で Generator に直させる |
-| `tools.sh` | ツール | `/code-review --fix` と `/simplify` を同じ差分に一度だけ走らせ、直した分をコミットする |
-| `evaluate.sh` | 評価 | Evaluator を起動し、判定が読めたときだけ `eval-<n>.md` を確定する |
+| `plan` | 計画 | Planner を起動し、`plan.md` と `tasks.tsv` を作らせる |
+| `generate` | 実装 | `tasks.tsv` の1行ごとに Generator を起動する。コミットか完了レポートが無ければ失敗として止める |
+| `revise` | 修正 | `FAIL` の指摘を、計画の範囲内で Generator に直させる |
+| `tools` | ツール | `/code-review --fix` と `/simplify` を同じ差分に一度だけ走らせ、直した分をコミットする |
+| `evaluate` | 評価 | Evaluator を起動し、判定が読めたときだけ `eval-<n>.md` を確定する |
 
-各工程が共通で使う部品は `loop.sh` にある。子プロセスの起動は `actor` 関数に集約し、役割名を環境変数 `TRINITY_ROLE` で渡し、モデルは `agents/<役割>.md` の frontmatter から読み、`guard.sh` をフックとして注入する。
+各工程が共通で使う部品は `loop.sh` にある。子プロセスの起動は `actor` 関数に集約しており、`claude --agent trinity:<役割>` で起動して、ふるまいとモデルは `agents/<役割>.md` から claude 自身が読み込む。Trinity を `--plugin-dir` でプラグインとして渡すため、どこから駆動しても同じ定義が解決される。あわせて役割名を環境変数 `TRINITY_ROLE` で渡し、`guard.sh` をフックとして注入する。
 
 ## guard.sh
 
