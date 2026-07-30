@@ -14,7 +14,7 @@ flowchart LR
 
 ## loop.sh
 
-1つの作業単位の収束ループを回す。評価が PASS を返すまで最大 `TRINITY_MAX_LOOPS` 回（既定 `5`）繰り返し、修正（`FAIL` の後）でも道具と評価は毎回通る。
+1つの作業単位の収束ループを回す。評価が PASS を返すまで最大 `TRINITY_MAX_LOOPS` 回（既定 `5`）繰り返し、修正（`FAIL` の後）でもツールと評価は毎回通る。
 
 ```mermaid
 flowchart TB
@@ -22,7 +22,7 @@ flowchart TB
   resume -->|PASS 済み| finish[終了]
   resume -->|続きから| plan[計画]
   plan --> generate[実装]
-  generate --> tools[道具]
+  generate --> tools[ツール]
   tools --> evaluate[評価]
   evaluate -->|PASS| finish
   evaluate -->|NEEDS_REVISION| plan
@@ -51,7 +51,7 @@ flowchart TB
 | `plan.md`・`plan-<n>.md` | Planner | 計画。`plan-<n>.md` はループごとの再開用の控え |
 | `tasks.tsv` | Planner | タスク一覧（タブ区切りで1行1タスク） |
 | `gen-<n>-task-<i>.md`・`gen-<n>-revise.md` | Generator | タスクと修正の完了レポート |
-| `review.md`・`simplify.md` | 道具 | レビューと整理の結果 |
+| `review.md`・`simplify.md` | ツール | レビューと整理の結果 |
 | `eval-<n>.md` | Evaluator | ループごとの判定（先頭行が `VERDICT:`） |
 | `status`・`pid`・`redrive` | `loop.sh`・Orchestrator | 状態・実行中の目印・作り直しの合図 |
 | `trinity.log` | 全員 | 実行ログ |
@@ -65,7 +65,7 @@ flowchart TB
 | `plan` | 計画 | Planner を起動し、`plan.md` と `tasks.tsv` を作らせる |
 | `generate` | 実装 | `tasks.tsv` の1行ごとに Generator を起動する。コミットか完了レポートが無ければ失敗として止める |
 | `revise` | 修正 | `FAIL` の指摘を、計画の範囲内で Generator に直させる |
-| `tools` | 道具 | `/code-review --fix` と `/simplify` を同じ差分に一度だけ走らせ、直した分をコミットする |
+| `tools` | ツール | `/code-review --fix` と `/simplify` を同じ差分に一度だけ走らせ、直した分をコミットする |
 | `evaluate` | 評価 | Evaluator を起動し、判定が読めたときだけ `eval-<n>.md` を確定する |
 
 子プロセスの起動は `actor` 関数に集約している。役割名を環境変数 `TRINITY_ROLE` で渡し、モデルは `agents/<役割>.md` の frontmatter から読み、`guard.sh` をフックとして注入する。

@@ -42,7 +42,7 @@ check() {
 PATH="$TMP/bin:$PATH" "$ROOT/scripts/loop.sh" "$TMP/run" "$TMP/wt" main 2> "$TMP/log1"
 check "status が passed になる"        '[ "$(cat "$TMP/run/status")" = passed ]'
 check "eval-1.md が PASS で残る"       'grep -q "VERDICT: PASS" "$TMP/run/eval-1.md"'
-check "道具の出力が残る"               '[ -s "$TMP/run/review.md" ] && [ -s "$TMP/run/simplify.md" ]'
+check "ツールの出力が残る"               '[ -s "$TMP/run/review.md" ] && [ -s "$TMP/run/simplify.md" ]'
 check "タスクのコミットが作られる"     '[ "$(git -C "$TMP/wt" log -1 --format=%s)" = task ]'
 check "終了時に pid が消える"          '[ ! -f "$TMP/run/pid" ]'
 

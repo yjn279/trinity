@@ -37,7 +37,7 @@ Claude Code で次を実行する。
 
 ## 流れ
 
-作業単位ごとに収束ループ（`scripts/loop.sh`）を回す。機械的に直せる指摘は道具（`/code-review --fix`・`/simplify`）が差分につき一度だけ自動修正し、Evaluator は機械に委ねられない4軸の判断に集中する。
+作業単位ごとに収束ループ（`scripts/loop.sh`）を回す。機械的に直せる指摘はツール（`/code-review --fix`・`/simplify`）が差分につき一度だけ自動修正し、Evaluator は機械に委ねられない4軸の判断に集中する。
 
 ```mermaid
 flowchart LR
@@ -46,7 +46,7 @@ flowchart LR
   subgraph loop[収束ループ]
     direction TB
     plan[計画] --> generate[実装]
-    generate --> tools[道具]
+    generate --> tools[ツール]
     tools --> evaluate[評価]
     evaluate -->|再計画| plan
     evaluate -->|修正| generate
@@ -59,7 +59,7 @@ Evaluator の判定がループの継続と離脱を決める。
 | 判定 | 動作 |
 | :-- | :-- |
 | `PASS` | 4軸すべてを満たす。ループを離脱して PR 作成へ進む |
-| `NEEDS_REVISION` | 計画・要件が誤っている、または道具の変更が要件の記述と食い違う。Planner が要件の更新か挙動の回復かを自分で判断し、再計画する |
+| `NEEDS_REVISION` | 計画・要件が誤っている、またはツールの変更が要件の記述と食い違う。Planner が要件の更新か挙動の回復かを自分で判断し、再計画する |
 | `FAIL` | 計画は妥当。既存計画の範囲内で Generator が修正する |
 
 ## 仕様
@@ -68,7 +68,7 @@ Evaluator の判定がループの継続と離脱を決める。
 
 | 仕様 | 内容 |
 | :-- | :-- |
-| 処理フロー | 3つの役割（Planner・Generator・Evaluator）と道具（`/code-review --fix`・`/simplify`）による検証で、1つの収束ループを回す |
+| 処理フロー | 3つの役割（Planner・Generator・Evaluator）とツール（`/code-review --fix`・`/simplify`）による検証で、1つの収束ループを回す |
 | worktree 実行 | 作業は `git-flow` スキルで切り出した worktree の中で行う。複数の作業単位は直列に実行する |
 | 確認 | 設計は起動時にフォアグラウンドの Orchestrator が `AskUserQuestion` で確定する。実行中はユーザーに確認しない |
 | 子プロセス起動 | Planner・Generator・Evaluator は、作業のなかでさらにサブエージェントを呼べるよう、`claude -p` の子プロセスとして起動される |
