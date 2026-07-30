@@ -14,7 +14,7 @@ flowchart LR
 
 ## loop.sh
 
-1つの作業単位を、評価が PASS を返すまで最大 `TRINITY_MAX_LOOPS` 回（既定 `5`）繰り返す。修正（`FAIL` の後）でも道具と評価は毎回通る。
+1つの作業単位の収束ループを回す。評価が PASS を返すまで最大 `TRINITY_MAX_LOOPS` 回（既定 `5`）繰り返し、修正（`FAIL` の後）でも道具と評価は毎回通る。
 
 ```mermaid
 flowchart TB

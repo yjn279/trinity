@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/loop.sh — 1つの作業単位のループ（計画 → 実装 → 道具 → 評価）を PASS まで回す。
+# scripts/loop.sh — 1つの作業単位の収束ループ（計画 → 実装 → 道具 → 評価）を PASS まで回す。
 # 使い方: loop.sh <RUN_DIR> <WORKTREE_DIR> <BRANCH>
 # 成果物は RUN_DIR に残し、再起動時は完了済みの段を飛ばして途中から再開する。
 # RUN_DIR/redrive（修正要望の合図。本文は requirement.md に追記済み）があれば作り直す。
