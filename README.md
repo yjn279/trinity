@@ -71,7 +71,7 @@ Evaluator の判定がループの継続と離脱を決める。
 | 処理フロー | 3つの役割（Planner・Generator・Evaluator）とツール（`/code-review --fix`・`/simplify`）による検証で、1つの収束ループを回す |
 | worktree 実行 | 作業は `git-flow` スキルで切り出した worktree の中で行う。複数の作業単位は直列に実行する |
 | 確認 | 設計は起動時にフォアグラウンドの Orchestrator が `AskUserQuestion` で確定する。実行中はユーザーに確認しない |
-| 子プロセス起動 | Planner・Generator・Evaluator は `claude --agent` の子プロセスとして起動され、ふるまいとモデルは `agents/<役割>.md` の定義から読み込まれる |
+| 子プロセス起動 | Planner・Generator・Evaluator は、作業のなかでさらにサブエージェントを呼べるよう、`claude -p` の子プロセスとして起動される |
 | 柔軟性 | 複数 Issue・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する |
 | PR マージ | Git Issue が提示された場合は Issue ごとに独立した PR を作成し、`AskUserQuestion` で提示した候補のうちユーザーが選択したものをマージする |
 | 課題起票 | 対象リポジトリと Trinity 本体それぞれの改善課題を `AskUserQuestion` で起票提案し、選択された課題を Issue として登録する |

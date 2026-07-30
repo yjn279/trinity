@@ -2,7 +2,6 @@
 name: planner
 description: "ユーザーの要望を作業計画に展開する。実装を、独立して検証できる最小のタスクに分割する。"
 model: opus
-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
 
 # 役割
