@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# scripts/loop.sh — 1つの作業単位の収束ループを回す。使い方: loop.sh <RUN_DIR> <WORKTREE_DIR> <BRANCH>
-# 評価が PASS を返すまで、開始ループから最大 TRINITY_MAX_LOOPS 回（既定 5）反復する。各段
-# （scripts/stages.sh）の成果物を RUN_DIR に残し、再起動時はそこから中断点を判定して完了済みの
-# 段を飛ばす。RUN_DIR/redrive（修正要望の合図。本文は Orchestrator が requirement.md へ追記済み）
-# があれば、PASS 済みでも再収束する。ログはすべて標準エラーに流す。
+# scripts/loop.sh — 1つの作業単位のループ（計画 → 実装 → 道具 → 評価）を PASS まで回す。
+# 使い方: loop.sh <RUN_DIR> <WORKTREE_DIR> <BRANCH>
+# 成果物は RUN_DIR に残し、再起動時は完了済みの段を飛ばして途中から再開する。
+# RUN_DIR/redrive（修正要望の合図。本文は requirement.md に追記済み）があれば作り直す。
 set -euo pipefail
 
 TRINITY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,12 +11,12 @@ WORKTREE_DIR="${2:?WORKTREE_DIR required}"
 BRANCH="${3:?BRANCH required}"
 export TRINITY_ROOT RUN_DIR WORKTREE_DIR BRANCH
 : "${TRINITY_MAX_LOOPS:=5}"
+mkdir -p "${RUN_DIR}"
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
-# 状態を1語で記録する。passed / failed / error が終端。終端では pid を消して「pid の有無」を
-# 走行中の信号にし、passed / failed では redrive も消して再収束を完了扱いにする。error では
-# redrive を残し、未完の再収束を続きから拾えるようにする。
+# 状態を1語で記録する。passed / failed / error が終端。終端では pid を消し、passed / failed では
+# redrive も消す。error では redrive を残し、再起動で続きから再開できるようにする。
 status() {
   printf '%s\n' "$1" > "${RUN_DIR}/status"
   log "status -> $1"
@@ -29,14 +28,14 @@ status() {
 
 fail() { log "$*"; status error; exit 1; }
 
-# shellcheck source=scripts/stages.sh
-. "${TRINITY_ROOT}/scripts/stages.sh"
+# shellcheck source=scripts/steps.sh
+. "${TRINITY_ROOT}/scripts/steps.sh"
 
-# pid を主張して二重起動を防ぐ。起動は Orchestrator が直列に行うため、生存確認だけで足りる。
+# 二重起動を防ぐ。起動元が直列に呼ぶため、生存確認だけでよい。
 kill -0 "$(cat "${RUN_DIR}/pid" 2>/dev/null)" 2>/dev/null && { log "既に実行中。何もしない。"; exit 0; }
 printf '%s\n' "$$" > "${RUN_DIR}/pid"
 
-# 最大の eval 番号とその判定から再開位置を決める。redrive があるときは PASS でも短絡しない。
+# 最後の評価とその判定から再開位置を決める。redrive があれば PASS 済みでも作り直す。
 k=0 last=""
 for f in "${RUN_DIR}"/eval-*.md; do
   n="${f##*/eval-}"; n="${n%.md}"

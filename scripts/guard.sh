@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# scripts/guard.sh — アクターの役割境界を課す PreToolUse フック。許否の単一の正。
-# stdin のフック JSON から tool_name / tool_input を読み、TRINITY_ROLE と RUN_DIR に応じて deny の
-# JSON を返す（何も返さなければ許可）。git は許可サブコマンドの一覧で判定し（deny-by-default）、
-# 設定（config・-c）と git を含む複合コマンドは一覧に依らず deny する。
+# scripts/guard.sh — アクターの権限を制限するフック（PreToolUse）。許可・拒否の判断はここが正。
+# 入力のフック JSON から道具名と引数を読み、役割（TRINITY_ROLE）に応じて拒否の JSON を返す
+# （何も返さなければ許可）。git は許可一覧に載るサブコマンドだけを許し、設定の変更
+# （config・-c）と、git を含む複合コマンドは常に拒否する。
 set -euo pipefail
 
 TRINITY_ROLE="${TRINITY_ROLE:-}"
@@ -14,7 +14,7 @@ deny() {
   exit 0
 }
 
-# "KEY":"value" 形の文字列値を1つ抜き出し、JSON エスケープを実文字に戻す。
+# "KEY":"値" の形の文字列を1つ取り出し、JSON で置き換えられた記号を元の文字に戻す。
 field() {
   local raw
   raw="$(printf '%s' "$2" | grep -Eo '"'"$1"'"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -1 \
@@ -24,8 +24,8 @@ field() {
   printf '%s' "$raw"
 }
 
-# Write / Edit の範囲。evaluator は全面拒否、planner は RUN_DIR 内のみ（境界を跨ぎうる「..」は
-# パス正規化の代わりに一律 deny）、generator は制約なし。
+# 書き込みの範囲。evaluator は全面拒否、planner は RUN_DIR の中だけ（境界を越えうる「..」を
+# 含むパスは判定せず拒否する）、generator は制限なし。
 check_write() {
   case "${TRINITY_ROLE}" in
     generator) ;;
@@ -40,8 +40,8 @@ check_write() {
   esac
 }
 
-# git の引数列を役割の一覧で判定する。設定は evasion 経路（alias 定義・core.pager 等の注入）の
-# ため config・-c とも一律 deny し、-C 等のリポジトリ指定フラグは値ごと読み飛ばす。
+# git の引数を役割の許可一覧で判定する。設定の変更は別名の定義やコマンド実行を仕込めるため
+# config・-c とも常に拒否し、-C などの場所指定は値ごと読み飛ばしてサブコマンドを探す。
 check_git() {
   local sub="" i=0 t allowed args=("$@") rest=()
   while [ "$i" -lt "${#args[@]}" ]; do
@@ -59,7 +59,7 @@ check_git() {
     *"|${sub}|"*) ;;
     *) deny "role=${TRINITY_ROLE} は git ${sub} を実行できない" ;;
   esac
-  # commit は --amend / --no-verify を deny する。-n を含む短縮フラグ束も丸ごと deny に倒す。
+  # commit は --amend / --no-verify を拒否する。-n を含む短い書き方もまとめて拒否する。
   [ "$sub" = commit ] && for t in "${rest[@]+"${rest[@]}"}"; do
     case "$t" in
       --amend | --no-verify) deny "git commit ${t} は実行できない" ;;
@@ -70,8 +70,8 @@ check_git() {
   return 0
 }
 
-# command を引用符を考慮して語列 WORDS に分解し、引用の外の複合演算子（& | ; ( ) ` と
-# 行継続 \<改行>）を見たら OPS=1 にする。引用の中はリテラルとして一語に連結する。
+# コマンド文字列を引用符を考慮して単語 WORDS に分け、引用の外に演算子（& | ; ( ) ` と
+# 行の折り返し \<改行>）があれば OPS=1 にする。引用の中は1つの単語として連結する。
 scan() {
   local s="$1" c q cur="" have=0 i=0
   local n=${#s}
@@ -95,8 +95,8 @@ scan() {
   return 0
 }
 
-# 実効コマンドが git なら複合を禁じたうえで check_git に渡し、git が語として他所に現れる形
-# （複合の後半・xargs git 等）は安全に判定できないため deny する。
+# 先頭が git なら複合コマンドを拒否したうえで判定し、git が途中に現れる形（複合の後半・
+# xargs git など）は安全に判定できないため拒否する。
 check_bash() {
   scan "$1"
   local w
