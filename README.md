@@ -1,10 +1,30 @@
 # Trinity
 
-Trinity は、計画・実装・評価を分業する3つのエージェント（Planner・Generator・Evaluator）で、長時間のエンジニアリングタスクを走り切る Claude Code プラグインである。`/trinity:run <要件>` で起動すると、隔離された worktree の中で実装とコミットを重ね、Evaluator が本番投入できる品質と認めるまで反復し、PR の作成からマージ・後片付けまで進める。
+Trinity は、要件を渡すと計画・実装・評価を繰り返して Pull Request に仕上げる、長時間タスク向けの Claude Code プラグインである。導入するだけで設定なしに使える。あなたがすることは2つだけで、最初に設計の確認へ答えることと、最後にどの PR を受け入れるかを選ぶことである。その間は人手なしで走り切る。
 
-ユーザーが関わるのは、起動直後の設計確認と最後の受け入れ判断の2回だけである。その間に確認は無く、導入すれば設定なしで使える。
+## 導入
 
-## 役割
+Claude Code で次を実行する。
+
+```shell
+/plugin marketplace add yjn279/trinity
+/plugin install trinity@yjn279
+```
+
+`bash`・`git`・`claude` CLI が PATH にあること。依存する [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)・[code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review)・`/simplify` は、未導入でも起動時に自動でセットアップされる（`~/.claude` への変更を含む）。
+
+## 使い方
+
+要件は自由形式の文でも Issue 番号でもよい。
+
+```shell
+/trinity:run ユーザー設定ページにテーマトグルを追加する。
+/trinity:run #12 #15 #20
+```
+
+起動すると、作業単位ごとにブランチと作業用の複製フォルダ（worktree）を切り、1本ずつ直列に処理して独立した PR を作る。使用量上限や障害で途中停止しても、再度起動すれば完了済みの工程を飛ばして続きから再開する。仕上がった PR はマージ候補として提示され、マージされた作業単位の環境は自動で片付く。選ばなかった PR は環境ごと残るほか、修正要望を添えてその場で作り直させることもできる。
+
+## 仕組み
 
 計画・実装・評価を1つの文脈に同居させると、文脈が膨らむほど計画が実装の都合で書き換わり、評価者が自分の作品に甘くなる。Trinity は役割を分け、Orchestrator（`/trinity:run` を受け取ったメイン会話の Claude 自身）が残り3つの役割を、固有の指示と新鮮な文脈を持つ `claude -p` の別プロセスとして起動する。受け渡しはファイルだけで行い、Evaluator は差分も検証も自分で再導出するため、「自分の書いたコードに甘くなる」という単一エージェントの典型的な失敗が設計上起こらない。
 
@@ -17,13 +37,13 @@ Trinity は、計画・実装・評価を分業する3つのエージェント�
 
 ## 流れ
 
-Orchestrator が作業単位ごとにブランチと worktree を切り、収束ループ（`scripts/loop.sh`）を1本ずつ直列に回す。機械的に直せる指摘は道具（`/code-review --fix`・`/simplify`）が差分につき一度だけ自動修正し、Evaluator は機械に委ねられない4軸の判断に集中する。
+作業単位ごとにループ（`scripts/loop.sh`）を回す。機械的に直せる指摘は道具（`/code-review --fix`・`/simplify`）が差分につき一度だけ自動修正し、Evaluator は機械に委ねられない4軸の判断に集中する。
 
 ```mermaid
 flowchart LR
   requirement[要件] --> orchestrator[Orchestrator]
   orchestrator --> plan
-  subgraph loop[収束ループ]
+  subgraph loop[ループ]
     direction TB
     plan[計画] --> generate[実装]
     generate --> tools[道具]
@@ -48,7 +68,7 @@ Evaluator の判定がループの継続と離脱を決める。
 
 | 仕様 | 内容 |
 | :-- | :-- |
-| 処理フロー | 3アクター（Planner・Generator・Evaluator）と道具（`/code-review --fix`・`/simplify`）による検証で、1つの収束ループを回す |
+| 処理フロー | 3アクター（Planner・Generator・Evaluator）と道具（`/code-review --fix`・`/simplify`）による検証で、1つのループを回す |
 | worktree 実行 | 作業は `git-flow` スキルで切り出した worktree の中で行う。複数の作業単位は直列に実行する |
 | 確認 | 設計は起動時にフォアグラウンドの Orchestrator が `AskUserQuestion` で確定する。実行中はユーザーに確認しない |
 | 子プロセス起動 | Planner・Generator・Evaluator は、作業のなかでさらにサブエージェントを呼べるよう、`claude -p` の子プロセスとして起動される |
@@ -58,18 +78,9 @@ Evaluator の判定がループの継続と離脱を決める。
 | 再開 | 実行が中断（使用量上限・レートリミット・障害など）しても、到達済みの工程をやり直さず中断点から再開する |
 | 後片付け | マージと課題起票の完了後、マージされた作業単位の環境（ブランチ・worktree・ラン成果物）をリモートを含めて削除する。マージされなかった単位はすべて残す |
 
-## 前提
+## 開発
 
-`bash`・`git`・`claude` CLI が PATH にあり、[git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)・[code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review)・`/simplify` が導入されていること。未導入のものは起動時に自動で検出し、確認なしでセットアップされる（`~/.claude` への変更を含む）。
-
-## 使い方
-
-要件は自由形式の文でも Issue 番号でもよい。複数 Issue は Issue ごとに独立したブランチ・worktree・PR を作り、1本ずつ直列に処理する。途中で停止しても、再度起動すれば中断点から再開する。
-
-```shell
-/trinity:run ユーザー設定ページにテーマトグルを追加する。
-/trinity:run #12 #15 #20
-```
+規約とファイル構成は [CLAUDE.md](CLAUDE.md) を参照する。
 
 ## 参考
 

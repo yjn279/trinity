@@ -19,7 +19,7 @@ argument-hint: "<issue number(s) or a short requirement>"
 
 `git-flow` スキルと `code-review` コマンドが未導入なら、`/trinity:run` の起動を暗黙の許可とみなし、確認なしで自動セットアップする（`~/.claude` への変更を含む）。
 
-要件をどう作業単位に分けるかを判断する。複数 Issue でも、単発 Issue でも、Issue を切らないタスクでもよい。作業単位ごとに `git-flow` スキルでブランチと worktree を切り出し、`RUN_DIR`（`.trinity/<セッション>/<スラッグ>/`）を作って `requirement.md`（要件と確定した設計）を書き込む。実行する順に `SESSION_DIR`（`.trinity/<セッション>/`）の `backlog.tsv` へタブ区切りで1行ずつ記す。
+要件をどう作業単位に分けるかを判断する。複数 Issue でも、単発 Issue でも、Issue を切らないタスクでもよい。作業単位ごとに `git-flow` スキルでブランチと worktree を切り出し、`RUN_DIR`（`.trinity/<セッション>/<スラッグ>/`）を作る。要件と確定した設計は、あなたが `requirement.md` にまとめて `RUN_DIR` へ書き込む（ユーザーが用意するファイルではない）。以後の各段はこれを要件の正として読む。実行する順に `SESSION_DIR`（`.trinity/<セッション>/`）の `backlog.tsv` へタブ区切りで1行ずつ記す。
 
 ```text
 slug<TAB>worktree<TAB>branch<TAB>title
