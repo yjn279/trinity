@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/loop.sh — 1つの作業単位の収束ループ（計画 → 実装 → ツール → 評価）を PASS まで回す。
 # 使い方: loop.sh <RUN_DIR> <WORKTREE_DIR> <BRANCH>
-# 成果物は RUN_DIR に残し、再起動時は完了済みの段を飛ばして途中から再開する。
+# 成果物は RUN_DIR に残し、再起動時は完了済みの工程を飛ばして途中から再開する。
 # RUN_DIR/redrive（修正要望の合図。本文は requirement.md に追記済み）があれば作り直す。
 set -euo pipefail
 
@@ -28,8 +28,37 @@ status() {
 
 fail() { log "$*"; status error; exit 1; }
 
-# shellcheck source=scripts/steps.sh
-. "${TRINITY_ROOT}/scripts/steps.sh"
+agent_body()  { awk 'f==2 {print} /^---$/ {f++}' "${TRINITY_ROOT}/agents/$1.md"; }
+agent_model() { awk -F': *' '/^model:/ {print $2; exit}' "${TRINITY_ROOT}/agents/$1.md"; }
+head_sha()    { git -C "${WORKTREE_DIR}" rev-parse HEAD 2>/dev/null || true; }
+
+# VERDICT 行から判定値を読む。記号と空白の飾りは取り除いてから照合する。
+verdict_of() { tr -d '`*#> \t' < "$1" | grep -m1 -oE '^VERDICT:[A-Z_]+' | cut -d: -f2 || true; }
+
+context() {
+  printf '\n## このランの入力\n- RUN_DIR: %s\n- WORKTREE_DIR: %s\n- BRANCH: %s\n- 現在のループ番号: %s\n- 要件: %s/requirement.md を読むこと\n' \
+    "${RUN_DIR}" "${WORKTREE_DIR}" "${BRANCH}" "$1" "${RUN_DIR}"
+}
+
+# claude を子プロセスとして1回起動する。CLAUDECODE を外して入れ子と誤検出されるのを避け、
+# guard.sh をフックとして注入して役割の権限を制限する。
+actor() {
+  ( cd "${WORKTREE_DIR}" && env -u CLAUDECODE TRINITY_ROLE="$1" \
+      claude -p "$2" --model "$(agent_model "$1")" \
+      --permission-mode bypassPermissions --strict-mcp-config \
+      --settings "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Write|Edit|NotebookEdit|Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"${TRINITY_ROOT}/scripts/guard.sh\"}]}]}}" )
+}
+
+# コミットか空でない完了レポートがあれば前進とみなし、どちらも無ければ失敗として止める。
+progressed() {
+  [ "$1" != "$(head_sha)" ] || [ -s "$2" ] || fail "$3: コミットも完了レポートも作られなかった"
+}
+
+# 各工程を読み込む。
+for f in "${TRINITY_ROOT}/scripts/steps/"*.sh; do
+  # shellcheck source=/dev/null
+  . "$f"
+done
 
 # 二重起動を防ぐ。起動元が直列に呼ぶため、生存確認だけでよい。
 kill -0 "$(cat "${RUN_DIR}/pid" 2>/dev/null)" 2>/dev/null && { log "既に実行中。何もしない。"; exit 0; }
