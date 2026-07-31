@@ -1,27 +1,21 @@
 #!/usr/bin/env bash
 # scripts/guard.sh — 各役割の権限を制限するフック（PreToolUse）。許可・拒否の判断はここが正。
-# 入力のフック JSON からツール名と引数を読み、役割（TRINITY_ROLE）に応じて拒否の JSON を返す
-# （何も返さなければ許可）。git は許可一覧に載るサブコマンドだけを許し、設定の変更
-# （config・-c）と、git を含む複合コマンドは常に拒否する。
+# フックの JSON からツール名と引数を読み、役割（TRINITY_ROLE）に応じて拒否の JSON を返す
+# （何も返さなければ許可）。git を含むコマンドは、判定できる単純な形（展開なし・引用符は
+# 一種類・先頭の単一コマンド）だけを許し、判定できない形は書き直しを求めて拒否する。
 set -euo pipefail
 
 TRINITY_ROLE="${TRINITY_ROLE:-}"
-READ_GIT="log|show|diff|status|rev-parse|blame|cat-file|ls-files|ls-tree|for-each-ref|rev-list|describe|shortlog|show-ref|name-rev|grep|var|help|version"
-WRITE_GIT="add|checkout|switch|restore|reset|revert|cherry-pick|merge|rebase|stash|mv|rm|clean|apply|branch|tag|notes|commit"
 
 deny() {
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$1"
   exit 0
 }
 
-# "KEY":"値" の形の文字列を1つ取り出し、JSON で置き換えられた記号を元の文字に戻す。
+# JSON から "KEY":"値" の値を取り出す。エスケープ（\" や \n）は戻さず、1行のまま返す。
 field() {
-  local raw
-  raw="$(printf '%s' "$2" | grep -Eo '"'"$1"'"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' | head -1 \
-    | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*"//; s/"$//')"
-  raw="${raw//\\\\/$'\x01'}"; raw="${raw//\\n/$'\n'}"; raw="${raw//\\t/$'\t'}"
-  raw="${raw//\\r/$'\r'}"; raw="${raw//\\\"/\"}"; raw="${raw//\\\///}"; raw="${raw//$'\x01'/\\}"
-  printf '%s' "$raw"
+  grep -Eo '"'"$1"'"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' <<<"$2" | head -1 |
+    sed -E 's/^[^:]*:[[:space:]]*"//; s/"$//'
 }
 
 # 書き込みの範囲。evaluator は全面拒否、planner は RUN_DIR の中だけ（境界を越えうる「..」を
@@ -40,75 +34,61 @@ check_write() {
   esac
 }
 
-# git の引数を役割の許可一覧で判定する。設定の変更は別名の定義やコマンド実行を仕込めるため
-# config・-c とも常に拒否し、-C などの場所指定は値ごと読み飛ばしてサブコマンドを探す。
+# git の引数を判定する。設定の変更（-c）は別名の定義やコマンド実行を仕込めるため役割によらず
+# 拒否し、-C などの場所指定は値ごと読み飛ばしてサブコマンドを探す。サブコマンドは許可一覧
+# （deny-by-default）で決め、読み取りは全役割に、変更は generator だけに許す。
 check_git() {
-  local sub="" i=0 t allowed args=("$@") rest=()
-  while [ "$i" -lt "${#args[@]}" ]; do
+  local args=("$@") sub="" i=0 t
+  while [ "$i" -lt "$#" ]; do
     case "${args[$i]}" in
       -c) deny "-c によるgit設定の一時上書きは実行できない" ;;
       -C | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
       -*) i=$((i + 1)) ;;
-      *) sub="${args[$i]}"; rest=("${args[@]:$((i + 1))}"); break ;;
+      *) sub="${args[$i]}"; break ;;
     esac
   done
-  [ -z "$sub" ] && return 0
-  allowed="${READ_GIT}"
-  [ "${TRINITY_ROLE}" = generator ] && allowed="${READ_GIT}|${WRITE_GIT}"
-  case "|${allowed}|" in
-    *"|${sub}|"*) ;;
+  [ -n "$sub" ] || return 0
+  case "${TRINITY_ROLE}:${sub}" in
+    *:log | *:show | *:diff | *:status | *:blame | *:grep | *:rev-parse | *:rev-list | *:ls-files | *:describe) ;;
+    generator:add | generator:rm | generator:mv | generator:restore | generator:checkout | generator:switch | generator:reset | generator:stash | generator:commit) ;;
     *) deny "role=${TRINITY_ROLE} は git ${sub} を実行できない" ;;
   esac
-  # commit は --amend / --no-verify を拒否する。-n を含む短い書き方もまとめて拒否する。
-  [ "$sub" = commit ] && for t in "${rest[@]+"${rest[@]}"}"; do
+  [ "$sub" = commit ] || return 0
+  for t in "${args[@]}"; do
     case "$t" in
       --amend | --no-verify) deny "git commit ${t} は実行できない" ;;
       --*) ;;
       -*n*) deny "git commit の -n（--no-verify）を含むフラグは実行できない" ;;
     esac
   done
-  return 0
 }
 
-# コマンド文字列を引用符を考慮して単語 WORDS に分け、引用の外に演算子（& | ; ( ) ` と
-# 行の折り返し \<改行>）があれば OPS=1 にする。引用の中は1つの単語として連結する。
-scan() {
-  local s="$1" c q cur="" have=0 i=0
-  local n=${#s}
-  WORDS=() OPS=0
-  while [ "$i" -lt "$n" ]; do
-    c="${s:$i:1}"
-    case "$c" in
-      "'" | '"')
-        q="$c" have=1 i=$((i + 1))
-        while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != "$q" ]; do cur+="${s:$i:1}"; i=$((i + 1)); done
-        i=$((i + 1)) ;;
-      '\')
-        if [ "${s:$((i + 1)):1}" = $'\n' ]; then OPS=1; else cur+="${s:$((i + 1)):1}" have=1; fi
-        i=$((i + 2)) ;;
-      '&' | '|' | ';' | '(' | ')' | '`') OPS=1; [ "$have" = 1 ] && WORDS+=("$cur"); cur="" have=0; i=$((i + 1)) ;;
-      ' ' | $'\t' | $'\n' | $'\r') [ "$have" = 1 ] && WORDS+=("$cur"); cur="" have=0; i=$((i + 1)) ;;
-      *) cur+="$c" have=1; i=$((i + 1)) ;;
-    esac
-  done
-  [ "$have" = 1 ] && WORDS+=("$cur")
-  return 0
-}
-
-# 先頭が git なら複合コマンドを拒否したうえで判定し、git が途中に現れる形（複合の後半・
-# xargs git など）は安全に判定できないため拒否する。
+# Bash の command を判定する。git という語が現れないコマンドは対象外として許可する。
+# git を含むコマンドは、判定を狂わせる形（バックスラッシュ・変数や置換の展開・引用符の
+# 混在）を拒否したうえで引用部分を1語（_）に畳み、区切り文字が残れば複合コマンドとして
+# 拒否し、残った語を単一の git コマンドとして判定する。作業場所の変数だけは値に置き換える。
 check_bash() {
-  scan "$1"
-  local w
-  if [ "${WORDS[0]:-}" = git ]; then
-    [ "$OPS" = 1 ] && deny "git を含む複合コマンドは実行できない（単一の git コマンドに分ける）"
-    check_git "${WORDS[@]:1}"
-    return 0
-  fi
-  for w in "${WORDS[@]+"${WORDS[@]}"}"; do
-    [ "$w" = git ] && deny "git を安全に判定できない形（複合・埋め込み）では実行できない"
-  done
-  return 0
+  local s="$1" w
+  case "$s" in *git*) ;; *) return 0 ;; esac
+  s="${s//\$\{WORKTREE_DIR\}/${WORKTREE_DIR:-}}"
+  s="${s//\$WORKTREE_DIR/${WORKTREE_DIR:-}}"
+  [[ "$s" == *'\\'* ]] && deny "git を含むコマンドにバックスラッシュがあると判定できない（使わない形に書き直す）"
+  [[ "$s" == *'$'* || "$s" == *'`'* ]] && deny "git を含むコマンドで変数や置換の展開は判定できない（WORKTREE_DIR 以外は値を直接書く）"
+  [[ "$s" == *\'* && "$s" == *'\"'* ]] && deny "git を含むコマンドで引用符の混在は判定できない（一種類に揃える）"
+  s="${s//\\n/;}"; s="${s//\\r/;}"; s="${s//\\t/ }"
+  s="$(sed -E 's/\\"[^\\]*\\"/_/g; s/'\''[^'\'']*'\''/_/g; s/^[[:space:];]+//; s/[[:space:];]+$//' <<<"$s")"
+  [[ "$s" == *\\* || "$s" == *\'* ]] && deny "git を含むコマンドの引用符が閉じていない"
+  local IFS=$' \t&|;()<>' seen=0
+  set -f
+  # shellcheck disable=SC2086
+  set -- $s
+  set +f
+  for w in "$@"; do [[ "$w" == git || "$w" == */git ]] && seen=1; done
+  [ "$seen" = 1 ] || return 0
+  [ "${1:-}" = git ] || deny "git は先頭の単独コマンドとしてだけ実行できる"
+  [[ "$s" == *[\&\|\;\(\)\<\>]* ]] && deny "git を含む複合コマンドや入出力の付け替えは実行できない（1つの git コマンドに分ける）"
+  shift
+  check_git "$@"
 }
 
 raw="$(cat)"
