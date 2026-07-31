@@ -48,6 +48,9 @@ run_case generator "git diff > out.txt"                        deny  # 入出力
 run_case generator "xargs git push"                            deny  # git が先頭コマンドでない
 run_case generator "/usr/bin/git push"                         deny  # パス指定の git も同じ
 run_case generator "git commit -m \"it's done\""               deny  # 引用符の混在
+run_case generator 'g"it" push'                                deny  # 引用符で git の語を組み立てる形
+run_case generator "gi't' push"                                deny
+run_case generator 'g\it push'                                 deny  # バックスラッシュで組み立てる形
 
 # 許可されるもの
 run_case planner   "git log"                                   allow
@@ -62,7 +65,8 @@ run_case generator "git checkout main"                         allow
 run_case generator "git reset --hard HEAD~1"                   allow
 run_case generator 'git log
 '                                                              allow  # 末尾の改行は複合にしない
-run_case generator 'echo "git push"'                           allow  # 引用の中の git は対象外
+run_case generator 'echo "git push"'                           allow  # 語全体の引用の中の git は対象外
+run_case generator "cat .gitignore"                            allow  # 語の中の git は git の語ではない
 run_case generator "npm test && npm run build"                 allow  # git を含まない複合は対象外
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
