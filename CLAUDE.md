@@ -1,76 +1,36 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## 概要
 
-## Overview
+これはアプリケーションではなく Claude Code プラグインである。実体はマークダウンのプロンプト定義とシェルであり、依存関係も設定も持たない（`settings.json` はスキーマ宣言のみのまま変更しない）。導入するだけで設定なしに使えることと、最初の設計確認と最後の受け入れ確認を除いて人手なしで長時間走り切ることを、何より大切にする。
 
-これはアプリケーションではなく Claude Code プラグインである。実体はマークダウンのプロンプト定義と、それを駆動するシェルのハーネスである。`package.json` も依存関係もない。 `settings.json` は意図的にスキーマ宣言だけを置き、ツールの事前承認は利用側の `~/.claude/` ユーザー設定に委ねる。
+変更の前に必ず `/product-management` スキルを適用する。KPI は仕様の少なさ・条件分岐の少なさ・コードの少なさ・定数の少なさであり、最善の実装は実装しないことである。
 
-構成は3層である。3つの agent 定義（ `agents/planner.md` ・ `agents/generator.md` ・ `agents/evaluator.md` ）、それを `claude -p` の子プロセスとして起動するシェルのハーネス（ `bin/trinity`・`lib/actors.sh` ）、そしてフォアグラウンドのオーケストレーター（ `commands/run.md` ）。対象プロジェクト側で `/trinity:run <要件>` を起動すると、Orchestrator が Issue 群を `backlog.tsv` に落とし、Issue ごとの背景パイプラインが `Plan → Generator → 道具 → Evaluator` を Production-Ready まで反復する。人がつくのはタスク投入直後——方針を確定するまで——であり、確定後は無人で走り切る。auto-mode で動かす前提の実装である。設計思想の網羅的な解説は `README.md` にあり、このファイルより詳しい。
+## 構成
 
-## Skills
+内容はそれぞれのファイルを単一の正とし、ここには重複して書かない。
 
-Trinity の開発では以下のスキルを依存として用いる。仕様・設計・コード・ドキュメントを変更する前に必ず適用し、価値提供の最大化と要素数の最小化の両立で判断する。
+```text
+.
+├── README.md            # 設計と確定仕様
+├── commands/
+│   └── run.md           # Orchestrator の手順（設計確認・実行・PR・受け入れ・後片付け）
+├── agents/              # 各役割のふるまいとモデル（claude --agent として読み込まれる）
+│   ├── planner.md
+│   ├── generator.md
+│   └── evaluator.md
+└── scripts/
+    ├── README.md        # スクリプトの詳しい説明
+    ├── loop.sh          # ループの制御と共通の部品（状態・再開・子プロセスの起動）
+    ├── steps.sh         # ループの各工程（計画・実装・修正・ツール・評価）。loop.sh が読み込む
+    ├── guard.sh         # 各役割の権限を制限するフック。許可・拒否の判断はここが正
+    ├── test-guard.sh    # 権限の許可・拒否のテスト
+    └── test-loop.sh     # ループの通し動作のテスト
+```
 
-- [product-management スキル](https://github.com/yjn279/.claude/tree/main/skills/product-management) — 機能追加の前に非実装の解決を検討し、削れる要素を削る。最善の実装は実装しないことであり、ビルドトラップを避ける。
+## 規約
 
-## Verification
-
-自動テストはない。シェルを書き換えたら最低限 `bash -n` と `shellcheck -S warning` を通す。挙動の確認は、このプラグインを入れた別プロジェクト（または使い捨ての作業ツリー）で実際に `/trinity:run` を小さな要件で回し、各アクターの出力と制御フローを観察して行う。書き換えた部品が解決していた失敗モードを再現できるか、あるいは不要になったかで評価する。
-
-## Architecture
-
-処理単位（セッション・パイプライン・ループ・タスク）の定義は `README.md` の [Processing Units](README.md#processing-units) 節を単一の正とする。
-
-オーケストレーターとアクター3者で構成され、各アクターは固有のシステムプロンプトと新鮮なコンテキストを持つ。役割を1つに統合しないのは、コンテキストが膨らむほどドリフトが起き、評価者が自分のコードを甘く見るためである。Orchestrator はメイン会話のフォアグラウンドの Claude、Planner・Generator・Evaluator はシェルのハーネスが `claude -p` の子プロセスとして起動する。それぞれの責務と frontmatter を以下に示す。
-
-| アクター | モデル | ツール | 責務 |
-| :-- | :-- | :-- | :-- |
-| Orchestrator | メイン会話 | — | 要件解釈・ユーザー対話・環境構築・背景パイプラインの dispatch と監視・PR 作成・確認・クリーンアップ |
-| Planner | opus | 読み書き可 | 要件を `plan.md` と機械可読な `tasks.tsv` に展開しタスクに分割する |
-| Generator | sonnet | 読み書き可 | 割り当てタスクを worktree 内で実装しコミットする（既存コードが要件を満たし加えるべき差分が無ければ、コミットせず理由をレポートに残す） |
-| Evaluator | sonnet | 読み取り専用 | コミットを4軸で独立評価し3値判定を書く |
-
-frontmatter の `model:` と `tools:` は設計上の意味を持つため、安易に変えない。モデルはコストと推論負荷の割り当てである。ツールは責務の境界であり、とりわけ Evaluator が Write/Edit を持たない読み取り専用なのは、自分でコードを直せない制約が評価の独立性を担保するからである。各アクターの振る舞いの単一の正は `agents/<role>.md` であり、`lib/actors.sh` はその本文を frontmatter を除いて指示として注入する。プロンプトの二重管理はしない。この境界は `lib/guard.sh` の PreToolUse フック一本（単層）で enforce する。Bash tool の `command` から git を role 別の allowlist（deny-by-default）で判定し（Planner・Evaluator は読み取り専用サブコマンド、Generator はそれに worktree 内の状態変更を加えたもの）、状態を変える evasion は `config` 書き込みと `-c` の deny で閉じる。git を含む複合コマンド（演算子・コマンド置換・行継続）は安全に切り出せないため deny し、単一の git コマンドへ分けさせる。Write/Edit（および NotebookEdit）は書き込み範囲を判定する。`trinity::claude` が per-actor に注入し、frontmatter の `tools:` はあくまで意図表現である。
-
-機械が下せる8割（実行検証・差分レビュー・整理）は、`bin/trinity loop` が Evaluator の前段で組み込みコマンド（`/code-review --fix`・`/simplify`・`/verify`）に委ねる。差分を書き換える `/code-review --fix`・`/simplify` はその差分につき一度だけ走り、挙動を検証する `/verify` は周ごとに走る。Evaluator はその出力を証拠として読み、削れない2割（要件適合・デザインの美・コードの美・要件妥当性）の判断にだけ集中する。道具の変更が `requirement.md` と食い違うときは常に `NEEDS_REVISION` とし、判断基準は `agents/evaluator.md` の Tool Deviation を正とする。`bin/trinity loop` の起動時、段ごとのチェックポイント（`plan-<n>.md`・`gen-<n>-task-<i>.md`・`gen-<n>-revise.md`・`review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md`・`eval-<n>.md`）から完了済みの段・タスク・道具をスキップし、中断点から再開する。
-
-アクターは互いのチャットコンテキストを見ず、受け渡しはすべてファイル経由で行う。`claude -p` の別プロセス境界がこの間接化を強制し、Evaluator の独立性を担保する。アクターをメイン会話のネイティブ subagent ではなく `claude -p` の子プロセスとして起動するのには、この独立性のほかに2つの構造的な理由がある。第一に、ネイティブ subagent は入れ子のサブエージェントを起動できないが、`claude -p` の子はフルの Claude Code セッションなので Planner・Generator・Evaluator が自分の作業の中でさらにサブエージェントを呼べる。第二に、long-running 前提のバックグラウンド実行が、メイン会話に張り付かない子プロセスだからこそ成り立つ。Orchestrator は段と段のあいだでコードを読み書きせず、`status`・`ask/` のファイルだけを介して背景パイプラインと通信する。`backlog.tsv` はパイプラインとの通信チャネルではなく、Orchestrator 自身が Issue 集合を書き残し読み返す耐久インデックスである。通信の経路を以下に示す。
-
-| 出力者 | 成果物 | 読む側 |
-| :-- | :-- | :-- |
-| Orchestrator | `${SESSION_DIR}/backlog.tsv`（Issue ごとの slug・worktree・branch・title を記す耐久インデックス） | Orchestrator 自身（起動・監視・再開のたびに読み返す） |
-| Planner | `${RUN_DIR}/plan.md`・`${RUN_DIR}/tasks.tsv` | Generator・Evaluator・パイプライン |
-| Generator | worktree 内のコミット(SHA、正当な変更不要のときは無し)と `${RUN_DIR}/gen-<n>-task-<i>.md` | Evaluator |
-| 道具 | `${RUN_DIR}/review-<n>.md`・`simplify-<n>.md`・`verify-<n>.md` | Evaluator |
-| Evaluator | 判定レポート本文（先頭行 `VERDICT:`）を `claude -p` の標準出力として返す。ハーネス（`trinity::evaluate`）が `${RUN_DIR}/eval-<n>.md` として原子的に保存する | Planner（次ループ）・パイプライン |
-| パイプライン | `${RUN_DIR}/status`・`${RUN_DIR}/ask/q` | Orchestrator（監視・確認） |
-| Orchestrator | `${RUN_DIR}/ask/a`（確認の回答） | パイプライン（Planner 再計画） |
-| Orchestrator | `${RUN_DIR}/redrive`（修正要望テキスト。`requirement.md` へ一度だけ取り込まれ、新しい PASS または終端 failed まで耐久状態として残る） | パイプライン（`bin/trinity` の `loop` が消費し `requirement.md` へ追記） |
-| `loop` | `${RUN_DIR}/pid`（自身の PID。起動時に原子的に主張し、終端 passed／failed／error で削除） | Orchestrator の再起動ガード（`status` の有無とあわせ、未起動・走行中・終端・クラッシュを判別） |
-
-## Invariants
-
-ハーネスの正しさは、複数ファイルにまたがる以下の規約に依存する。プロンプトを書き換えるときも崩さない。
-
-| 規約 | 内容 |
-| :-- | :-- |
-| Orchestrator はコードに触れない | コードの読み書きは必ず Generator に委譲する。 |
-| アクターは `claude -p` 経由 | Planner・Generator・Evaluator は `lib/actors.sh` の関数が `claude -p` の子プロセスとして起動する。アクターの振る舞いの単一の正は `agents/<role>.md`。 |
-| 権限は機構で enforce | 役割境界は `lib/guard.sh` の PreToolUse フック一本（単層）で enforce する。Bash tool の `command` から git を role 別 allowlist（deny-by-default）で判定し、Planner・Evaluator は読み取り専用サブコマンド、Generator はそれに worktree 内の状態変更を加えたものへ倒す。allowlist 外（alias 名を含む）と `config` 書き込み・`-c`・git を含む複合コマンドは deny する。Write/Edit（および NotebookEdit）の許容範囲も同じフックが判定する。`trinity::claude` が per-actor に注入する。frontmatter の `tools:` は意図表現に留まり、同梱 `settings.json` はスキーマ宣言のみのまま変更しない。 |
-| worktree 隔離 | Generator・Evaluator は `git -C "${WORKTREE_DIR}" <cmd>` で操作し、 `cd` で代替しない。ユーザーのチェックアウトには触れない。 |
-| 引用は worktree 相対 | `plan.md` ・ `eval-<n>.md` 内の `path:line` は `WORKTREE_DIR` 起点の相対パスで書く。 |
-| 成果物の置き場所 | ラン成果物は対象プロジェクト側の `.trinity/<session>/<slug>/` に、`backlog.tsv` は `.trinity/<session>/` に出る。worktree は `.trinity/` の外に出る（配置規約は git-flow スキルに従う）。このリポジトリではない。 |
-| 受け渡しはファイルチャネル | `backlog.tsv` は Orchestrator が Issue ごとの slug・worktree・branch・title を書き残す耐久インデックスであり、fan-out は Orchestrator が backlog の各行につき `loop` を1本ずつ起動して行う。確認は `ask/q`・`ask/a`、進捗は `status`、修正要望の再収束は `redrive` の各ファイルで橋渡しする。 |
-| AskUserQuestion はフォアグラウンド限定 | `AskUserQuestion` を呼べるのは Orchestrator だけ。背景の Planner は `## 要確認の論点` を surface し、パイプラインが `needs-input` でブロックして Orchestrator の運搬を待つ。 |
-| ログ保持 | このリポジトリに限り、`.trinity/` 配下のラン成果物（`trinity.log`・`backlog.tsv`・各ランの `plan.md`・`tasks.tsv`・ループごとのスナップショット `plan-*.md`・`eval-*.md`・`gen-*.md`・`review-*.md`・`simplify-*.md`・`verify-*.md`・`status`・`planner-*.out`・`gen-*.out`・`evaluator-*.out`・`pipeline.out`）はデバッグのためクリーンアップで削除しない。 |
-| 3値判定 | Evaluator は判定レポート本文の先頭行に `VERDICT:` として `PASS` ・ `NEEDS_REVISION` ・ `FAIL` のいずれかを返す（自分ではファイルを書かない）。ハーネス（`trinity::evaluate`）がこれを `${RUN_DIR}/eval-<n>.md` として原子的に保存し、それぞれループ脱出・Planner 再計画・Generator 修正に対応する。ループ離脱は `PASS` だけで決まる。道具パスの逸脱は常に `NEEDS_REVISION` に振り分け、新しい判定値は増やさない（判断基準は `agents/evaluator.md` の Tool Deviation を正とする）。 |
-
-## Conventions
-
-agent 定義とプロンプトを書き換える際の約束を以下に示す。
-
-- 見出しは英語（1〜3語）で、本文と説明は日本語で書き、既存のトーンに合わせる。
-- シェルは `bash`・`set -euo pipefail` を前提に書き、`shellcheck -S warning` を通す。アクターの振る舞いは `agents/<role>.md` を単一の正とし、`lib/actors.sh` に処理ロジックは寄せても振る舞いの指示は二重化しない。
-- 配布メタデータを変えるときは `.claude-plugin/plugin.json` と `.claude-plugin/marketplace.json` の `name` を揃える。バージョンの単一の正は `plugin.json` の `version` フィールドであり、`version` の更新は release-please が `extra-files` 経由でリリース PR のマージ時に自動で行う（`marketplace.json` に `version` フィールドは持たせない）。現行バージョンの記録は `.release-please-manifest.json` が担う。リリース手順の詳細は `docs/release.md` を参照する。
-- コミット・PR タイトルは Conventional Commits 接頭辞（`feat:`・`fix:`・`feat!:` など）を付けた日本語命令形で書く（例： `feat: release-please でリリースを自動化する`）。release-please はこの接頭辞からバージョン増分（patch / minor / major）を算出するため、接頭辞は必須である。PR 番号は squash merge が自動付与するため本文に手書きしない。
+- 見出しは日本語のシンプルな名詞とし、本文も日本語・一般的な用語で書く。造語を用いない。
+- シェルは `bash`・`set -euo pipefail` を前提に書く。変更したら `bash -n`・`shellcheck -S warning` と `scripts/test-*.sh` の両テストを通し、挙動はこのプラグインを入れた別プロジェクトで `/trinity:run` を小さく回して確認する。
+- コミット・PR タイトルは Conventional Commits 接頭辞付きの日本語命令形で書く（例: `feat: release-please でリリースを自動化する`）。release-please が接頭辞から増分（`fix:` は patch、`feat:` は minor、`feat!:` は major）を算出し、リリース PR のマージでバージョン反映・タグ・GitHub Release まで自動で行う。`plugin.json` の `version` は手で編集しない。
+- このリポジトリに限り、`.trinity/` 配下の実行時に生成されたファイルはデバッグのため削除しない。
