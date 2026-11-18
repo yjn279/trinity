@@ -11,7 +11,7 @@ Claude Code で次を実行する。
 /plugin install trinity@yjn279
 ```
 
-`bash`・`git` が PATH にあること。依存する [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)・[product-management スキル](https://github.com/yjn279/.claude/tree/main/skills/product-management)・[code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review)・`/simplify` は、未導入でも起動時に自動でセットアップされる（`~/.claude` への変更を含む）。
+`git` が PATH にあること。依存する [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)・[product-management スキル](https://github.com/yjn279/.claude/tree/main/skills/product-management)・[code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review)・`/simplify` は、未導入でも起動時に自動でセットアップされる（`~/.claude` への変更を含む）。
 
 人手なしで走り切るには、確認を挟まない権限モード（auto など）で Claude Code を起動する。サブエージェントは起動元の会話の権限モードを引き継ぐ。
 
