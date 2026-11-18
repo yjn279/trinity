@@ -33,7 +33,7 @@ name<TAB>worktree<TAB>branch<TAB>title<TAB>drive
 
 ### 3. 実行
 
-まず、すべての行の `drive` を現在の `k` に更新する（`stopped` は消える。この更新は、手順2の直後と、手順6の修正要望で作り直すときに限って行う）。そのうえで `backlog.tsv` の上から1行ずつ、直列に回す。`drive` が `stopped` の行は飛ばす。作業単位を回す間は、`EnterWorktree` でセッションをその worktree に置く（Generator がかける `/code-review --fix`・`/simplify` が、その worktree の差分に効くため）。終えたら元の場所へ戻る。
+まず、すべての行の `drive` を現在の `k` に更新する（`stopped` は消える。この更新は、手順2の直後と、手順6の修正要望で作り直すときに限って行う）。そのうえで `backlog.tsv` の上から1行ずつ、直列に回す。`drive` が `stopped` の行は飛ばす。作業単位を回す間は、メイン会話の作業場所を Bash の `cd` でその worktree に置く（サブエージェントは起動時のメイン会話の作業場所で始まるので、Generator がかける `/code-review --fix`・`/simplify` が、その worktree の差分に効く）。終えたら元の場所へ `cd` で戻る。
 
 **次の段の決め方。** `RUN_DIR` の `eval-*.md` のうち番号が最大のものを `eval-<k>.md` とし（無ければ k = 0）、周 `n = k + 1` について次のとおり進む。各段は、その出力ファイルが既にあれば飛ばす。
 
