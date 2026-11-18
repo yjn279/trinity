@@ -13,7 +13,7 @@ Claude Code で次を実行する。
 
 `bash`・`git` が PATH にあること。依存する [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)・[product-management スキル](https://github.com/yjn279/.claude/tree/main/skills/product-management)・[code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review)・`/simplify` は、未導入でも起動時に自動でセットアップされる（`~/.claude` への変更を含む）。
 
-人手なしで走り切るには、確認を挟まない権限モード（auto など）で Claude Code を起動する。サブエージェントは起動元の会話の権限モードを引き継ぐ。`bypassPermissions` は使わない。
+人手なしで走り切るには、確認を挟まない権限モード（auto など）で Claude Code を起動する。サブエージェントは起動元の会話の権限モードを引き継ぐ。
 
 ## 使い方
 
@@ -73,8 +73,7 @@ flowchart LR
 | 評価観点 | 常設の「要件適合」「価値」に、実装対象に応じた観点を加える。観点は計画ごとに固定し、変わるのは再計画のときだけ |
 | worktree 実行 | 作業は `git-flow` スキルで切り出した worktree の中で行う。複数の作業単位は直列に実行する |
 | 確認 | 設計は起動時に Orchestrator が `AskUserQuestion` で確定する。実行中はユーザーに確認しない |
-| サブエージェント起動 | Generator はタスクごとに直列に、Evaluator は観点ごとに並列に起動する。役割の制限はエージェント定義のツール指定で表し、Evaluator は書き込み系ツールを持たない |
-| ツール | Generator が、コミット前の検証の一部として自分の差分に `/code-review --fix`・`/simplify` をかけ、計画に反する修正は採らない |
+| サブエージェント起動 | Generator はタスクごとに直列に、Evaluator は観点ごとに並列に起動する。役割の制限はエージェント定義のツール指定で表し、Evaluator は書き込み系ツールを持たない。Generator は、コミット前の検証の一部として自分の差分に `/code-review --fix`・`/simplify` をかけ、計画に反する修正は採らない |
 | 柔軟性 | 複数 Issue・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する |
 | PR マージ | Git Issue が提示された場合は Issue ごとに独立した PR を作成し、`AskUserQuestion` で提示した候補のうちユーザーが選択したものをマージする |
 | 課題起票 | 対象リポジトリと Trinity 本体それぞれの改善課題を `AskUserQuestion` で起票提案し、選択された課題を Issue として登録する |
