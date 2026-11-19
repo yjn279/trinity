@@ -3,14 +3,14 @@
   "owner": {
     "name": "yjn279"
   },
-  "description": "Trinity — Planner / Generator / Evaluator の3エージェント・ハーネスを配布するマーケットプレイス。",
+  "description": "Trinity — Orchestrator / Generator / Evaluator のハーネスを配布するマーケットプレイス。",
   "plugins": [
     {
       "name": "trinity",
       "source": "./",
       "description": "Harness for long-running tasks.",
       "category": "development",
-      "keywords": ["agent", "harness", "planner", "generator", "evaluator", "worktree"]
+      "keywords": ["agent", "harness", "orchestrator", "generator", "evaluator", "worktree"]
     }
   ]
 }
