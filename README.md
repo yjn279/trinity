@@ -11,7 +11,7 @@ Claude Code で次を実行する。
 /plugin install trinity@yjn279
 ```
 
-`git` が PATH にあること。依存する [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)・[product-management スキル](https://github.com/yjn279/.claude/tree/main/skills/product-management)・[code-review コマンド](https://github.com/anthropics/claude-code/tree/main/plugins/code-review)・`/simplify` は、未導入でも起動時に自動でセットアップされる（`~/.claude` への変更を含む）。
+`git` が PATH にあること。依存する [git-flow スキル](https://github.com/yjn279/.claude/tree/main/skills/git-flow)と [product-management スキル](https://github.com/yjn279/.claude/tree/main/skills/product-management)は、未導入でも起動時に自動でセットアップされる（`~/.claude` への変更を含む）。
 
 人手なしで走り切るには、確認を挟まない権限モード（auto など）で Claude Code を起動する。サブエージェントは起動元の会話の権限モードを引き継ぐ。
 
@@ -28,12 +28,12 @@ Claude Code で次を実行する。
 
 ## 仕組み
 
-計画・実装・評価を1つの文脈に同居させると、文脈が膨らむほど計画が実装の都合で書き換わり、評価者が自分の作品に甘くなる。Trinity は役割を分け、Orchestrator（`/trinity:run` を受け取ったメイン会話の Claude 自身）が、Generator と Evaluator を固有の指示と新鮮な文脈を持つサブエージェントとして起動する。Orchestrator は計画するがコードは書かない。Evaluator は書き込み系ツールを持たず、差分も検証も自分で再導出するため、「自分の書いたコードに甘くなる」という単一エージェントの典型的な失敗が設計上起こらない。状態はすべて `RUN_DIR` のファイルに置く。
+計画・実装・評価を1つの文脈に同居させると、文脈が膨らむほど計画が実装の都合で書き換わり、評価者が自分の作品に甘くなる。Trinity は役割を分け、Orchestrator（`/trinity:run` を受け取ったメイン会話の Claude 自身）が、Generator と Evaluator を固有の指示と新鮮な文脈を持つサブエージェントとして起動する。Orchestrator は計画するがコードは書かない。Evaluator は書き込み系ツールもサブエージェントを起動する手段も持たず、差分も検証も自分で再導出するため、「自分の書いたコードに甘くなる」という単一エージェントの典型的な失敗が設計上起こらない。状態はすべて `RUN_DIR` のファイルに置く。
 
 | 役割 | モデル | 担当 |
 | :-- | :-- | :-- |
 | Orchestrator | メイン会話 | 要件の解釈・取り組む価値の判断・計画（評価観点を含む）・設計の確定・サブエージェントの起動と判定の集約・再計画・PR 作成・受け入れ確認・後片付け |
-| Generator | sonnet | 計画のタスクを worktree の中で実装し、検証とツール（`/code-review --fix`・`/simplify`）を通してコミットする |
+| Generator | sonnet | 計画のタスクを worktree の中で実装し、検証を通してコミットする。最後の Generator はブランチ全体の差分にツール（`/code-review --fix`・`/simplify`）もかける |
 | Evaluator | sonnet | 割り当てられた1つの評価観点で、コミットを独立に判定する |
 
 ## 流れ
@@ -68,16 +68,16 @@ flowchart LR
 
 | 仕様 | 内容 |
 | :-- | :-- |
-| 処理フロー | Orchestrator が計画し、Generator と Evaluator をサブエージェントとして起動して、1つの収束ループを回す。1回の駆動で回せるのは作業単位ごとに5周まで |
+| 処理フロー | Orchestrator が計画し、Generator と Evaluator をサブエージェントとして起動して、1つの収束ループを回す。いまの要件に対する評価が5つに達しても合格しない作業単位は止める |
 | 取り組む価値の判断 | 計画の段で `product-management` スキルを適用し、「実装しない／根本対応に組み替える／要求どおり実装する」を判断する。ユーザーの判断が要るときは、最初の設計確認に含める |
 | 評価観点 | 常設の「要件適合」「価値」に、実装対象に応じた観点を加える。観点は計画ごとに固定し、変わるのは再計画のときだけ |
 | worktree 実行 | 作業は `git-flow` スキルで切り出した worktree の中で行う。複数の作業単位は直列に実行する |
 | 確認 | 設計は起動時に Orchestrator が `AskUserQuestion` で確定する。実行中はユーザーに確認しない |
-| サブエージェント起動 | Generator はタスクごとに直列に、Evaluator は観点ごとに並列に起動する。役割の制限はエージェント定義のツール指定で表し、Evaluator は書き込み系ツールを持たない。Generator は、コミット前の検証の一部として自分の差分に `/code-review --fix`・`/simplify` をかけ、計画に反する修正は採らない |
+| サブエージェント起動 | Generator はタスクごとに直列に、Evaluator は観点ごとに並列に起動する。役割の制限はエージェント定義のツール指定で表し、Evaluator は書き込み系ツールもサブエージェントを起動する手段も持たない。`/code-review --fix`・`/simplify` は、各周で最後に起動される Generator（計画の最終タスクと修正）だけが、デフォルトブランチとのブランチ全体の差分にかけ、計画に反する修正は採らない |
 | 柔軟性 | 複数 Issue・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する |
 | PR マージ | Git Issue が提示された場合は Issue ごとに独立した PR を作成し、`AskUserQuestion` で提示した候補のうちユーザーが選択したものをマージする |
 | 課題起票 | 対象リポジトリと Trinity 本体それぞれの改善課題を `AskUserQuestion` で起票提案し、選択された課題を Issue として登録する |
-| 再開 | 各段は、その出力ファイルが既にあれば飛ばす。中断（使用量上限・レートリミット・障害など）後は再度起動すれば、ファイルから到達点を読み取って続きから再開する。合格済みとして扱うのは、最新の評価が `PASS` で、その後にコミットも要件も変わっていないときに限る |
+| 再開 | 各段は、その出力ファイルが既にあれば飛ばす。中断（使用量上限・レートリミット・障害など）後は再度起動すれば、ファイルから到達点を読み取って続きから再開する。要件より新しい評価だけをいまの要件に対する評価とみなす。合格は、最新の評価が `PASS` で、評価したコミットが worktree の `HEAD` と同じで、その評価が要件より新しいときに限る |
 | 後片付け | マージと課題起票の完了後、マージされた作業単位の環境（ブランチ・worktree・実行時に生成されたファイル）をリモートを含めて削除する。マージされなかった単位はすべて残す |
 
 ## 開発

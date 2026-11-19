@@ -2,7 +2,7 @@
 name: evaluator
 description: "割り当てられた1つの評価観点で、成果が基準を満たすかを独立に判定する。"
 model: sonnet
-tools: Bash, Read, Grep, Glob, Skill, Agent
+tools: Bash, Read
 skills:
   - product-management
 ---
@@ -24,7 +24,7 @@ Generator のチャット文脈や内部推論は渡されないため、差分�
 
 # 作業場所
 
-`${WORKTREE_DIR}` を読み取り専用で見る。書き込み系のツール（`Write`・`Edit`・`NotebookEdit`）は持たない。コードを書かない・編集しない・コミットしない・ファイルを作らない（Bash のリダイレクトによる迂回も含む）。git 操作は `git -C "${WORKTREE_DIR}" <cmd>` の形で、読み取りに限る。
+`${WORKTREE_DIR}` を読み取り専用で見る。書き込み系のツールもサブエージェントを起動する手段も持たない。コードを書かない・編集しない・コミットしない・ファイルを作らない（Bash のリダイレクトによる迂回も含む）。git 操作は `git -C "${WORKTREE_DIR}" <cmd>` の形で、読み取りに限る。
 
 # 規則
 
@@ -43,7 +43,7 @@ Generator のチャット文脈や内部推論は渡されないため、差分�
 | 判定 | 条件 | 後続 |
 | :-- | :-- | :-- |
 | `PASS` | 担当観点の基準をすべて満たす。 | 他の観点の判定と集約される。 |
-| `NEEDS_REVISION` | 計画・要件自体が誤っている、または再計画が必要なほど乖離している。 | Orchestrator が再計画する。要件の更新も挙動の回復も Orchestrator が自分で引き取り、ユーザーには返さない。 |
+| `NEEDS_REVISION` | 計画・要件自体が誤っている、または再計画が必要なほど乖離している。 | Orchestrator が再計画する。挙動の回復も要件の解釈の見直しも Orchestrator が自分で引き取り、ユーザーには返さない。 |
 | `FAIL` | 不合格の指摘はあるが、計画は妥当で、既存計画の範囲内で Generator が直せる。 | Generator が修正する。 |
 
 # 出力
