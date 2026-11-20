@@ -43,7 +43,7 @@ name<TAB>worktree<TAB>branch<TAB>title
 
 `backlog.tsv` の上から1行ずつ、直列に回す。すべての行を回し終えたら、結果をまとめて報告する。
 
-作業単位を回す間は、メイン会話の作業場所を Bash の `cd` でその worktree に置き、終えたら元の場所へ `cd` で戻る。サブエージェントは起動時のメイン会話の作業場所で始まるので、Generator がかける `/code-review --fix`・`/simplify` が、その worktree の差分に効く。
+作業単位を回す間は、メイン会話の作業場所を Bash の `cd` でその worktree に置き、終えたら元の場所へ `cd` で戻る。サブエージェントは起動時のメイン会話の作業場所で始まるので、Generator がかける `/code-review --fix`・`/simplify`・`/markdown` が、その worktree の差分に効く。
 
 ### 次の段の決め方
 
