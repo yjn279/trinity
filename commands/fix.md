@@ -15,11 +15,11 @@ PR 番号またはブランチ名を対象とする。省略したときは現�
 
 ## 準備
 
-`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree と `RUN_DIR` を用意する。起動時に添えた文は `requirement.md` に追記せず、修正の指示として Generator に渡す（追記すると既存の評価がすべて古くなり、修正の根拠を失う）。`/trinity:review` や `/trinity:run` が使った `RUN_DIR` はそのまま再利用される。要件が得られないときは止めて、その旨を伝える。
+対象の PR 番号はブランチ名に直し、`.trinity/*/backlog.tsv` の `branch` 列がそのブランチである行から `RUN_DIR` を探し、`eval-*.md` のうち番号が最大のものを `eval-<k>.md` とする。`RUN_DIR` が見つからないとき、または `requirement.md` より新しい評価が1つも無いときは、作業環境やファイルを作らず止めて、先に `/trinity:review` を実行するよう伝える。評価の判定は問わない。
+
+`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree を用意して `RUN_DIR` を再利用する。起動時に添えた文は `requirement.md` に追記せず、修正の指示として Generator に渡す（追記すると既存の評価がすべて古くなり、修正の根拠を失う）。要件が得られないときは止めて、その旨を伝える。
 
 ## 修正
-
-`RUN_DIR` の `eval-*.md` のうち番号が最大のものを `eval-<k>.md` とする。`requirement.md` より新しい評価が1つも無ければ止めて、先に `/trinity:review` を実行するよう伝える。評価の判定は問わない。
 
 `gen-<k+1>-revise.md` が既にあれば、その評価に対する修正は済んでいるので、飛ばして `/trinity:review` を案内する。
 

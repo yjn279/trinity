@@ -87,7 +87,7 @@ flowchart LR
 | 確認 | 設計は起動時に Orchestrator が `AskUserQuestion` で確定する。実行中はユーザーに確認しない |
 | サブエージェント起動 | Generator はタスクごとに直列に、Evaluator は観点ごとに並列に起動する。役割の制限はエージェント定義のツール指定で表し、Evaluator は書き込み系ツールもサブエージェントを起動する手段も持たない。`/code-review --fix`・`/simplify`・`/markdown` は、各周で最後に起動される Generator（計画の最終タスクと修正）だけが、デフォルトブランチとのブランチ全体の差分にかけ、計画に反する修正は採らない |
 | 柔軟性 | 複数 Issue・単発 Issue・Issue でないタスク・実施後の修正のいずれにも対応する |
-| 既存の PR・ブランチ | `/trinity:review` と `/trinity:fix` は、そのブランチを worktree に切り出し、PR の本文・紐づく Issue・起動時の文を要件とする。作業の記録（`RUN_DIR`）は `backlog.tsv` の `branch` 列から引いて再利用する。`/trinity:review` は評価だけを `eval-<k+1>.md` に保存し、`/trinity:fix` は最新の評価に対する修正を `gen-<k+1>-revise.md` に書いて PR へ反映する。その評価に対する修正が済んでいれば飛ばす。`/trinity:run` も同じ扱いで既存のブランチを対象にできる |
+| 既存の PR・ブランチ | `/trinity:review` と `/trinity:fix` は、そのブランチを worktree に切り出し、PR の本文と紐づく Issue を要件とする（`/trinity:review` では起動時の文も加え、`/trinity:fix` では起動時の文を修正の指示として扱う）。作業の記録（`RUN_DIR`）は `backlog.tsv` の `branch` 列から引いて再利用する。`/trinity:review` は評価だけを `eval-<k+1>.md` に保存し、`/trinity:fix` は最新の評価に対する修正を `gen-<k+1>-revise.md` に書いて PR へ反映する。その評価に対する修正が済んでいれば飛ばす。`/trinity:run` も同じ扱いで既存のブランチを対象にできる |
 | PR マージ | Git Issue が提示された場合は Issue ごとに独立した PR を作成し、`AskUserQuestion` で提示した候補のうちユーザーが選択したものをマージする |
 | 課題起票 | 対象リポジトリと Trinity 本体それぞれの改善課題を `AskUserQuestion` で起票提案し、選択された課題を Issue として登録する |
 | 再開 | 各段は、その出力ファイルが既にあれば飛ばす。中断（使用量上限・レートリミット・障害など）後は再度起動すれば、ファイルから到達点を読み取って続きから再開する。要件より新しい評価だけをいまの要件に対する評価とみなす。合格は、最新の評価が `PASS` で、評価したコミットが worktree の `HEAD` と同じで、その評価が要件より新しいときに限る |

@@ -15,7 +15,7 @@ PR 番号またはブランチ名を対象とする。省略したときは現�
 
 ## 準備
 
-`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree・`RUN_DIR`・`requirement.md` を用意する。起動時に添えた文は追加の要件として `requirement.md` に追記され、それより古い評価はいまの要件に対する評価とみなされない。要件が得られないときは止めて、その旨を伝える。
+`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree・`RUN_DIR`・`requirement.md` を用意する。起動時に添えた文は追加の要件として `requirement.md` に加える（すでにあれば追記する）。追記すると、それより古い評価はいまの要件に対する評価とみなされない。要件が得られないときは止めて、その旨を伝える。
 
 ## 評価
 
