@@ -15,7 +15,7 @@ PR 番号またはブランチ名を対象とする。省略したときは現�
 
 ## 準備
 
-`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree・`RUN_DIR`・`requirement.md` を用意する。起動時に添えた文は追加の要件とする。`backlog.tsv` に行が無い作業単位は、その準備のとおり行を足す。要件が得られないときは止めて、その旨を伝える。
+`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree・`RUN_DIR`・`requirement.md` を用意する。起動時に添えた文は追加の要件とする。要件が得られないときは止めて、その旨を伝える。
 
 ## 評価
 
