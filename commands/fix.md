@@ -1,6 +1,6 @@
 ---
 description: "Fix an existing PR or branch based on its latest Trinity evaluation."
-argument-hint: "[<PR number or branch>...] [<additional requirement>]"
+argument-hint: "[<PR number or branch>...]"
 ---
 
 # Trinity 修正
@@ -17,7 +17,7 @@ PR 番号またはブランチ名を対象とする。省略したときは現�
 
 対象の PR 番号はブランチ名に直し、`.trinity/*/backlog.tsv` の `branch` 列がそのブランチである行から `RUN_DIR` を探し、`eval-*.md` のうち番号が最大のものを `eval-<k>.md` とする。`RUN_DIR` が見つからないとき、または `requirement.md` より新しい評価が1つも無いときは、作業環境やファイルを作らず止めて、先に `/trinity:review` を実行するよう伝える。評価の判定は問わない。
 
-`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree を用意して `RUN_DIR` を再利用する。起動時に添えた文は `requirement.md` に追記せず、修正の指示として Generator に渡す（追記すると既存の評価がすべて古くなり、修正の根拠を失う）。要件が得られないときは止めて、その旨を伝える。
+`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree を用意して `RUN_DIR` を再利用する。要件が得られないときは止めて、その旨を伝える。
 
 ## 修正
 
