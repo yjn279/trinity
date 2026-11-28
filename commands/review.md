@@ -15,7 +15,7 @@ PR 番号またはブランチ名を対象とする。省略したときは現�
 
 ## 準備
 
-`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree・`RUN_DIR`・`requirement.md` を用意する。起動時に添えた文は追加の要件とする。要件が得られないときは止めて、その旨を伝える。
+`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「準備」に従い、対象のブランチの worktree・`RUN_DIR`・`requirement.md` を用意する。起動時に添えた文は追加の要件として `requirement.md` に追記され、それより古い評価はいまの要件に対する評価とみなされない。要件が得られないときは止めて、その旨を伝える。
 
 ## 評価
 
@@ -23,7 +23,7 @@ PR 番号またはブランチ名を対象とする。省略したときは現�
 
 いまの要件（`requirement.md`）より新しい `plan-*.md` があれば、番号が最大のものをそのまま使う。無ければ `plan-<k+1>.md` を `${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「計画」と「評価観点」に従って書く。ただしタスクは置かず、受け入れ基準と評価観点だけにする。
 
-`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「評価」に従い、観点ごとに Evaluator を並列に起動して保存する。評価するコミットの SHA は worktree の `HEAD` とする。
+`${CLAUDE_PLUGIN_ROOT}/commands/run.md` の「実行」に従ってメイン会話の作業場所を worktree に置いたうえで、「評価」に従い、観点ごとに Evaluator を並列に起動して保存する。評価するコミットの SHA は worktree の `HEAD` とする。
 
 ## 報告
 
