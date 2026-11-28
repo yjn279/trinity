@@ -14,7 +14,9 @@
 .
 ├── README.md            # 設計と確定仕様
 ├── commands/
-│   └── run.md           # Orchestrator の手順（設計確認・計画・実行・PR・受け入れ・後片付け）
+│   ├── run.md           # Orchestrator の手順（設計確認・計画・実行・PR・受け入れ・後片付け）
+│   ├── review.md        # 既存の PR・ブランチを評価する
+│   └── fix.md           # 既存の PR・ブランチを最新の評価で修正する
 └── agents/              # サブエージェントのふるまいとモデル
     ├── generator.md     # 計画のタスクを実装してコミットする
     └── evaluator.md     # 1つの評価観点で成果を判定する
