@@ -31,9 +31,11 @@ argument-hint: "<issue number(s) or a short requirement>"
 
 作業単位ごとに `git-flow` スキルでブランチと worktree を切り出し、`RUN_DIR`（`.trinity/<セッション>/<作業名>/`）を作る。すでに作業環境が構築済みの場合はそれを再利用する。
 
-要件と確定した設計は、あなたが `requirement.md` にまとめて `RUN_DIR` へ書き込む。以後の各段はこれを要件の正として読む。`requirement.md` を書き換えるのは、この準備の段と、受け入れの修正要望のときだけとする。
+作業単位が既存の PR やブランチのときは、そのブランチを worktree に切り出す。`RUN_DIR` は、`.trinity/*/backlog.tsv` の `branch` 列がそのブランチである行を探し、あればその行の作業環境を再利用する。無ければ新しく作る。
 
-実行する順に、`SESSION_DIR`（`.trinity/<セッション>/`）の `backlog.tsv` へタブ区切りで1行ずつ記す。
+要件と確定した設計は、あなたが `requirement.md` にまとめて `RUN_DIR` へ書き込む。以後の各段はこれを要件の正として読む。`requirement.md` を書き換えるのは、この準備の段と、受け入れの修正要望のときだけとする。既存の PR やブランチでは、PR の本文と紐づく Issue に、起動時に添えた文を足して要件とする。PR が無いブランチは起動時の文だけを要件とする。要件が得られないときは推測で進めず、止めてその旨を伝える。
+
+実行する順に、`SESSION_DIR`（`.trinity/<セッション>/`）の `backlog.tsv` へタブ区切りで1行ずつ記す。再利用した作業環境の行はすでにあるので足さない。
 
 ```text
 name<TAB>worktree<TAB>branch<TAB>title
